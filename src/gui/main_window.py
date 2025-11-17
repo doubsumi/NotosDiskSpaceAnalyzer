@@ -75,11 +75,22 @@ class MainWindow(QMainWindow):
         # 状态栏
         self.statusBar().showMessage("准备就绪")
 
+    def stop_analysis(self):
+        """停止分析"""
+        if self.is_analyzing:
+            self.statusBar().showMessage("正在停止分析...")
+            self.analysis_service.stop_analysis()
+            self.is_analyzing = False
+            self.progress_bar.setVisible(False)
+            self.navigation_bar.set_stop_button_visible(False)
+            self.statusBar().showMessage("分析已停止")
+
     def connect_signals(self):
         """连接信号槽"""
         # 导航信号
         self.navigation_bar.back_clicked.connect(self.go_back)
         self.navigation_bar.home_clicked.connect(self.go_home)
+        self.navigation_bar.stop_clicked.connect(self.stop_analysis)
 
         # 列表点击信号
         self.list_widget.item_clicked.connect(self.on_item_clicked)
@@ -103,6 +114,7 @@ class MainWindow(QMainWindow):
         self.is_analyzing = True
         self.progress_bar.setVisible(True)
         self.progress_bar.setValue(0)
+        self.navigation_bar.set_stop_button_visible(True)
         self.statusBar().showMessage("正在分析...")
 
     def on_analysis_finished(self, result):
@@ -110,6 +122,7 @@ class MainWindow(QMainWindow):
         self.is_analyzing = False
         self.progress_bar.setVisible(False)
         self.progress_bar.setValue(0)
+        self.navigation_bar.set_stop_button_visible(False)
 
         try:
             self.chart_widget.update_chart(result)

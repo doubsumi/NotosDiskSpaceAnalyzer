@@ -1,10 +1,9 @@
 from PyQt5.QtCore import QObject, pyqtSignal, QTimer
 from src.core.analyzer import DiskAnalyzer
-from src.models.analysis_result import AnalysisResult
 
 
 class AnalysisService(QObject):
-    """分析服务 - 修复版本"""
+    """分析服务 - 修复信号连接问题"""
 
     analysis_started = pyqtSignal()
     analysis_finished = pyqtSignal(object)
@@ -34,23 +33,23 @@ class AnalysisService(QObject):
     def _start_disk_analysis(self):
         """开始磁盘分析"""
         try:
-            self.analyzer = DiskAnalyzer()  # 不传递路径，表示分析磁盘
+            self.analyzer = DiskAnalyzer()
             self._connect_analyzer_signals()
-            self.analyzer.analyze_path()  # 现在这个方法存在了
+            self.analyzer.analyze_path()
         except Exception as e:
             self.error_occurred.emit(f"启动磁盘分析失败: {str(e)}")
 
     def _start_directory_analysis(self, path: str):
         """开始目录分析"""
         try:
-            self.analyzer = DiskAnalyzer(path)  # 传递路径，表示分析目录
+            self.analyzer = DiskAnalyzer(path)
             self._connect_analyzer_signals()
-            self.analyzer.analyze_path(path)  # 现在这个方法存在了
+            self.analyzer.analyze_path(path)
         except Exception as e:
             self.error_occurred.emit(f"启动目录分析失败: {str(e)}")
 
     def _connect_analyzer_signals(self):
-        """连接分析器信号"""
+        """连接分析器信号 - 修复版本"""
         if self.analyzer:
             self.analyzer.progress_updated.connect(self.progress_updated)
             self.analyzer.analysis_finished.connect(self.analysis_finished)

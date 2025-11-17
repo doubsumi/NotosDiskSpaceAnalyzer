@@ -1,6 +1,8 @@
 import os
 import platform
-from typing import List
+import math
+from pathlib import Path
+from typing import Dict, List
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from src.models.disk_item import DiskItem
@@ -10,7 +12,7 @@ from src.core.size_calculator import SizeCalculator
 
 
 class DiskAnalyzer(QThread):
-    """磁盘分析器 - 修复版本"""
+    """磁盘分析器 - 修复版本，支持停止功能"""
 
     progress_updated = pyqtSignal(int, str)
     analysis_finished = pyqtSignal(object)
@@ -20,12 +22,14 @@ class DiskAnalyzer(QThread):
         super().__init__()
         self._is_running = True
         self._current_path = path
+        self.size_calculator = SizeCalculator()  # 创建计算器实例
 
     def analyze_path(self, path: str = None):
-        """分析指定路径 - 添加这个方法"""
+        """分析指定路径"""
         if path is not None:
             self._current_path = path
         self._is_running = True
+        self.size_calculator._is_running = True  # 重置计算器状态
         self.start()
 
     def run(self):
@@ -49,6 +53,7 @@ class DiskAnalyzer(QThread):
     def stop_analysis(self):
         """停止分析"""
         self._is_running = False
+        self.size_calculator.stop_calculation()  # 停止计算器
         if self.isRunning():
             self.wait(1000)
 
@@ -75,7 +80,7 @@ class DiskAnalyzer(QThread):
         )
 
     def _analyze_directory(self, path: str) -> AnalysisResult:
-        """分析指定目录 - 包含文件和目录"""
+        """分析指定目录 - 支持停止功能"""
         items = []
 
         try:
@@ -93,11 +98,10 @@ class DiskAnalyzer(QThread):
 
                 try:
                     if os.path.isdir(item_path):
-                        # 目录：计算整个目录的大小
-                        size = SizeCalculator.calculate_directory_size_iterative(item_path)
+                        # 使用计算器计算目录大小
+                        size = self.size_calculator.calculate_directory_size_iterative(item_path)
                         item_type = "directory"
                     else:
-                        # 文件：获取文件大小
                         size = os.path.getsize(item_path)
                         item_type = "file"
 
@@ -116,7 +120,7 @@ class DiskAnalyzer(QThread):
                 # 更新进度
                 if total_items > 0:
                     progress = int((i + 1) / total_items * 100)
-                    self.progress_updated.emit(progress, item_name)
+                    self.progress_updated.emit(progress, f"正在分析: {item_name}")
 
         except (PermissionError, MemoryError, OSError) as e:
             self.error_occurred.emit(f"无法访问目录: {path} - {str(e)}")
@@ -137,7 +141,7 @@ class DiskAnalyzer(QThread):
         )
 
     def _get_windows_disks(self) -> List[DiskItem]:
-        """获取Windows磁盘 - 修复版本"""
+        """获取Windows磁盘"""
         import string
         import ctypes
 
@@ -150,13 +154,11 @@ class DiskAnalyzer(QThread):
                 try:
                     import psutil
                     usage = psutil.disk_usage(drive)
-                    # 修复：存储完整的磁盘信息
                     disk_item = DiskItem(
                         name=drive,
                         path=drive,
-                        size=usage.used,  # 饼图使用已用空间
+                        size=usage.used,
                         item_type="disk",
-                        # 添加额外信息用于显示
                         total_size=usage.total,
                         used_size=usage.used,
                         free_size=usage.free
@@ -169,7 +171,7 @@ class DiskAnalyzer(QThread):
         return disks
 
     def _get_linux_disks(self) -> List[DiskItem]:
-        """获取Linux磁盘 - 修复版本"""
+        """获取Linux磁盘"""
         import psutil
 
         disks = []
@@ -181,7 +183,6 @@ class DiskAnalyzer(QThread):
                     continue
 
                 usage = psutil.disk_usage(partition.mountpoint)
-                # 修复：存储完整的磁盘信息
                 disk_item = DiskItem(
                     name=partition.mountpoint,
                     path=partition.mountpoint,
