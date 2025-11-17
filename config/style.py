@@ -1,18 +1,19 @@
 class StyleManager:
-    """样式管理类"""
+    """样式管理器 - 统一白色背景"""
 
     @staticmethod
     def get_main_style():
-        """获取主样式表"""
+        """获取主样式表 - 统一白色背景"""
         return """
             QMainWindow {
-                background-color: #f5f5f5;
+                background-color: white;
             }
             QWidget {
                 font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+                background-color: white;
             }
             QPushButton {
-                background-color: #2196F3;
+                background-color: #007bff;
                 border: none;
                 color: white;
                 padding: 8px 16px;
@@ -22,40 +23,51 @@ class StyleManager:
                 border-radius: 4px;
             }
             QPushButton:hover {
-                background-color: #1976D2;
+                background-color: #0056b3;
             }
             QPushButton:disabled {
-                background-color: #cccccc;
-                color: #666666;
+                background-color: #6c757d;
+                color: #adb5bd;
             }
             QListWidget {
                 background-color: white;
-                border: 1px solid #ddd;
+                border: 1px solid #dee2e6;
                 border-radius: 4px;
                 font-size: 12px;
+                outline: none;
             }
             QListWidget::item {
-                padding: 8px;
-                border-bottom: 1px solid #eee;
+                padding: 8px 12px;
+                border-bottom: 1px solid #e9ecef;
+            }
+            QListWidget::item:hover {
+                background-color: #f8f9fa;
             }
             QListWidget::item:selected {
-                background-color: #e3f2fd;
-                color: #1976D2;
+                background-color: #007bff;
+                color: white;
+                border-radius: 2px;
             }
             QProgressBar {
-                border: 1px solid #ccc;
+                border: 1px solid #ced4da;
                 border-radius: 4px;
                 text-align: center;
                 background-color: white;
+                color: #495057;
             }
             QProgressBar::chunk {
-                background-color: #4CAF50;
+                background-color: #28a745;
                 border-radius: 3px;
             }
             QLabel {
-                color: #333;
+                color: #212529;
+                background-color: transparent;
             }
             QSplitter::handle {
-                background-color: #ddd;
+                background-color: #dee2e6;
+                width: 1px;
+            }
+            QSplitter::handle:hover {
+                background-color: #adb5bd;
             }
         """

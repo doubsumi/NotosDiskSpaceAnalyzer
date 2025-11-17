@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from typing import Dict, Any, List
 
-from models.disk_item import DiskItem
+from src.models.disk_item import DiskItem
 
 
 @dataclass

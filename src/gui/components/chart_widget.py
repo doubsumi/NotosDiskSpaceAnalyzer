@@ -2,6 +2,7 @@ import os
 import platform
 import subprocess
 
+import matplotlib.pyplot as plt
 from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel
@@ -9,6 +10,14 @@ from PyQt5.QtCore import Qt, pyqtSignal
 
 from src.models.analysis_result import AnalysisResult
 from config.settings import Settings
+
+# 设置中文字体支持
+try:
+    # 尝试使用系统中文字体
+    plt.rcParams['font.sans-serif'] = ['Microsoft YaHei', 'SimHei', 'Arial Unicode MS']
+    plt.rcParams['axes.unicode_minus'] = False  # 解决负号显示问题
+except:
+    pass
 
 
 class ChartWidget(QWidget):
@@ -21,6 +30,7 @@ class ChartWidget(QWidget):
         super().__init__(parent)
         self.current_result = None
         self.wedges = None
+        self.is_dark_mode = False
         self.init_ui()
 
     def init_ui(self):
@@ -30,11 +40,12 @@ class ChartWidget(QWidget):
         # 图表标题
         self.chart_title = QLabel("磁盘使用情况")
         self.chart_title.setAlignment(Qt.AlignCenter)
-        self.chart_title.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px;")
+        self.chart_title.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px; color: #212529;")
         layout.addWidget(self.chart_title)
 
         # 创建matplotlib图形
         self.figure = Figure(figsize=(6, 6), dpi=100)
+        self.figure.patch.set_facecolor('white')
         self.canvas = FigureCanvas(self.figure)
 
         # 连接点击事件
@@ -43,14 +54,24 @@ class ChartWidget(QWidget):
         layout.addWidget(self.canvas)
 
     def update_chart(self, analysis_result: AnalysisResult):
-        """更新图表 - 修复标题逻辑"""
+        """更新图表 - 修复中文显示"""
         self.current_result = analysis_result
         self.figure.clear()
         ax = self.figure.add_subplot(111)
 
+        # 设置背景色
+        if self.is_dark_mode:
+            self.figure.patch.set_facecolor('#1a1a1a')
+            ax.set_facecolor('#2d2d2d')
+        else:
+            self.figure.patch.set_facecolor('white')
+            ax.set_facecolor('white')
+
         if not analysis_result.items:
-            ax.text(0.5, 0.5, "无数据", ha='center', va='center', transform=ax.transAxes)
-            self.chart_title.setText("磁盘使用情况 - 无数据")
+            text_color = 'white' if self.is_dark_mode else 'black'
+            ax.text(0.5, 0.5, "无数据", ha='center', va='center',
+                    transform=ax.transAxes, color=text_color, fontsize=12)
+            self.update_title_style()
             self.canvas.draw()
             return
 
@@ -59,18 +80,20 @@ class ChartWidget(QWidget):
         sizes = []
         colors = []
 
-        # 只显示前8个最大的项目，避免重叠
+        # 只显示前8个最大的项目
         display_items = analysis_result.items[:8]
 
         for i, item in enumerate(display_items):
-            # 缩短标签以避免重叠
-            label = f"{self.shorten_text(item.name, 10)}\n{self.format_size_short(item.size)}"
+            # 处理中文文件名显示
+            label = f"{self.shorten_text(item.name, 8)}\n{self.format_size_short(item.size)}"
             labels.append(label)
             sizes.append(item.size)
             colors.append(self.get_color(i))
 
         # 绘制饼图
         if sum(sizes) > 0:
+            text_color = 'white' if self.is_dark_mode else 'black'
+
             self.wedges, texts, autotexts = ax.pie(
                 sizes,
                 labels=labels,
@@ -82,73 +105,58 @@ class ChartWidget(QWidget):
                 rotatelabels=True
             )
 
-            # 设置文本样式
+            # 设置文本样式 - 根据主题调整颜色
             for autotext in autotexts:
-                autotext.set_color('white')
+                autotext.set_color('white' if self.is_dark_mode else 'black')
                 autotext.set_fontweight('bold')
                 autotext.set_fontsize(8)
 
             for text in texts:
                 text.set_fontsize(9)
+                text.set_color(text_color)
 
             ax.axis('equal')
 
-            # 修复：正确的标题逻辑
-            if analysis_result.result_type == "disk":
-                # 情况1：首页 - 显示所有磁盘汇总
-                self.chart_title.setText("🖥️磁盘使用情况")
-            else:  # 进入具体路径的分析
-                # 清理路径
-                clean_path = analysis_result.path.rstrip('\\/')
-
-                # 判断是否是磁盘根目录
-                is_disk_root = (
-                    # Windows磁盘根目录：C:、D: 等
-                    (len(clean_path) == 2 and clean_path[1] == ':') or
-                    # Linux根目录：/
-                    clean_path == ''
-                )
-
-                if is_disk_root:
-                    # 情况2：磁盘根目录
-                    if clean_path == '':
-                        disk_name = "/"
-                    else:
-                        disk_name = clean_path[0]  # 提取磁盘字母 C: -> C
-                    self.chart_title.setText(f"磁盘 {disk_name} 使用情况")
-                else:
-                    # 情况3：普通目录
-                    dir_name = os.path.basename(clean_path)
-                    self.chart_title.setText(f"目录使用情况: {dir_name}")
+            # 更新标题
+            self.update_chart_title(analysis_result)
         else:
-            ax.text(0.5, 0.5, "无数据", ha='center', va='center', transform=ax.transAxes)
+            text_color = 'white' if self.is_dark_mode else 'black'
+            ax.text(0.5, 0.5, "无数据", ha='center', va='center',
+                    transform=ax.transAxes, color=text_color, fontsize=12)
             self.chart_title.setText("无数据可用")
 
         self.canvas.draw()
 
-    def extract_directory_name(self, path: str) -> str:
-        """提取目录名称"""
-        if not path:
-            return "未知目录"
-
-        # 移除末尾的路径分隔符
-        path = path.rstrip('\\/')
-
-        # 分割路径并获取最后一部分
-        if '\\' in path:  # Windows路径
-            parts = path.split('\\')
-        elif '/' in path:  # Linux路径
-            parts = path.split('/')
+    def update_chart_title(self, analysis_result):
+        """更新图表标题"""
+        if analysis_result.result_type == "disk":
+            self.chart_title.setText("🖥️磁盘使用情况")
         else:
-            parts = [path]
+            import os
+            clean_path = analysis_result.path.rstrip('\\/')
+            is_disk_root = (
+                    (len(clean_path) == 2 and clean_path[1] == ':') or
+                    clean_path == ''
+            )
 
-        # 获取非空的最后一部分
-        for part in reversed(parts):
-            if part and part not in ['', '\\', '/']:
-                return part
+            if is_disk_root:
+                if clean_path == '':
+                    disk_name = "/"
+                else:
+                    disk_name = clean_path[0]
+                self.chart_title.setText(f"磁盘 {disk_name} 使用情况")
+            else:
+                dir_name = os.path.basename(clean_path)
+                self.chart_title.setText(f"目录使用情况: {dir_name}")
 
-        # 如果都是空，返回根目录标识
-        return "根目录"
+        self.update_title_style()
+
+    def update_title_style(self):
+        """更新标题样式"""
+        if self.is_dark_mode:
+            self.chart_title.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px; color: #e9ecef;")
+        else:
+            self.chart_title.setStyleSheet("font-size: 14px; font-weight: bold; margin: 10px; color: #212529;")
 
     def on_chart_click(self, event):
         """处理饼图点击事件 - 支持右键菜单"""
@@ -254,3 +262,11 @@ class ChartWidget(QWidget):
         """获取颜色"""
         colors = Settings.CHART_COLORS
         return colors[index % len(colors)]
+
+    def apply_theme(self, is_dark_mode):
+        """应用主题"""
+        self.is_dark_mode = is_dark_mode
+        self.update_title_style()
+        # 重新绘制当前图表
+        if self.current_result:
+            self.update_chart(self.current_result)

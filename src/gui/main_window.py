@@ -4,6 +4,7 @@ import traceback
 from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
                              QWidget, QLabel, QProgressBar, QSplitter, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer
+from PyQt5.QtGui import QPalette, QColor  # 新增导入
 
 from config.style import StyleManager
 from src.services.analysis_service import AnalysisService
@@ -14,25 +15,30 @@ from src.gui.components.list_widget import DirectoryListWidget
 
 
 class MainWindow(QMainWindow):
-    """主窗口 - 修复线程安全问题"""
+    """主窗口 - 支持标题栏主题统一"""
 
     def __init__(self):
         super().__init__()
         self.analysis_service = AnalysisService()
         self.navigation_service = NavigationService()
         self.is_analyzing = False
+        self.is_dark_mode = False  # 新增：主题状态
 
         self.init_ui()
         self.connect_signals()
 
-        # 延迟启动初始分析，确保UI完全加载
+        # 延迟启动初始分析
         QTimer.singleShot(500, self.start_initial_analysis)
 
     def init_ui(self):
         """初始化UI"""
-        self.setWindowTitle("磁盘空间分析工具 v1.0 - 稳定版")
+        self.setWindowTitle("磁盘空间分析工具 v1.0")
         self.setGeometry(100, 100, 1200, 800)
-        self.setStyleSheet(StyleManager.get_main_style())
+
+        # 移除自定义窗口标志，使用系统默认标题栏
+        # self.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint |
+        #                    Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint |
+        #                    Qt.WindowCloseButtonHint)
 
         # 创建中央部件
         central_widget = QWidget()
@@ -41,7 +47,7 @@ class MainWindow(QMainWindow):
         # 主布局
         main_layout = QVBoxLayout(central_widget)
         main_layout.setSpacing(10)
-        main_layout.setContentsMargins(10, 10, 10, 10)
+        main_layout.setContentsMargins(15, 15, 15, 15)
 
         # 导航栏
         self.navigation_bar = NavigationBar()
@@ -68,12 +74,130 @@ class MainWindow(QMainWindow):
         # 设置分割比例
         content_splitter.setStretchFactor(0, 2)
         content_splitter.setStretchFactor(1, 1)
-        content_splitter.setSizes([800, 400])
+        content_splitter.setSizes([700, 350])
+        content_splitter.setMinimumHeight(500)
 
         main_layout.addWidget(content_splitter, 1)
 
         # 状态栏
         self.statusBar().showMessage("准备就绪")
+
+        # 最后应用主题样式
+        self.apply_light_theme()
+
+    def apply_light_theme(self):
+        """应用浅色主题"""
+        self.is_dark_mode = False
+
+        # 使用QSS设置标题栏样式（Windows系统支持）
+        light_style = """
+            QMainWindow {
+                background-color: white;
+                color: #212529;
+            }
+            QWidget {
+                background-color: white;
+                color: #212529;
+                font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+            }
+            /* 标题栏样式 */
+            QMainWindow::title {
+                background-color: white;
+                color: #212529;
+            }
+            QListWidget {
+                background-color: white;
+                border: 1px solid #dee2e6;
+                color: #212529;
+                border-radius: 4px;
+            }
+            QListWidget::item {
+                background-color: white;
+                border-bottom: 1px solid #e9ecef;
+            }
+            QListWidget::item:hover {
+                background-color: #f8f9fa;
+            }
+            QListWidget::item:selected {
+                background-color: #007bff;
+                color: white;
+            }
+            QLabel {
+                color: #212529;
+                background-color: transparent;
+            }
+        """
+        self.setStyleSheet(StyleManager.get_main_style() + light_style)
+
+        # 安全地更新图表主题
+        if hasattr(self, 'chart_widget'):
+            self.chart_widget.apply_theme(False)
+
+    def apply_dark_theme(self):
+        """应用暗黑主题"""
+        self.is_dark_mode = True
+
+        # 使用QSS设置标题栏样式
+        dark_style = """
+            QMainWindow {
+                background-color: #1a1a1a;
+                color: #e9ecef;
+            }
+            QWidget {
+                background-color: #1a1a1a;
+                color: #e9ecef;
+                font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
+            }
+            /* 标题栏样式 */
+            QMainWindow::title {
+                background-color: #1a1a1a;
+                color: #e9ecef;
+            }
+            QListWidget {
+                background-color: #252525;
+                border: 1px solid #404040;
+                color: #e9ecef;
+                border-radius: 4px;
+            }
+            QListWidget::item {
+                background-color: #252525;
+                border-bottom: 1px solid #404040;
+            }
+            QListWidget::item:hover {
+                background-color: #323232;
+            }
+            QListWidget::item:selected {
+                background-color: #0d6efd;
+                color: white;
+            }
+            QLabel {
+                color: #e9ecef;
+                background-color: transparent;
+            }
+            QProgressBar {
+                background-color: #252525;
+                color: #e9ecef;
+                border: 1px solid #404040;
+            }
+            QProgressBar::chunk {
+                background-color: #198754;
+            }
+            QSplitter::handle {
+                background-color: #404040;
+            }
+        """
+        self.setStyleSheet(StyleManager.get_main_style() + dark_style)
+
+        # 安全地更新图表主题
+        if hasattr(self, 'chart_widget'):
+            self.chart_widget.apply_theme(True)
+
+    def on_theme_toggled(self, is_dark_mode):
+        """主题切换处理"""
+        if is_dark_mode:
+            self.apply_dark_theme()
+        else:
+            self.apply_light_theme()
 
     def stop_analysis(self):
         """停止分析"""
@@ -91,6 +215,7 @@ class MainWindow(QMainWindow):
         self.navigation_bar.back_clicked.connect(self.go_back)
         self.navigation_bar.home_clicked.connect(self.go_home)
         self.navigation_bar.stop_clicked.connect(self.stop_analysis)
+        self.navigation_bar.theme_toggled.connect(self.on_theme_toggled)  # 新增主题切换
 
         # 列表点击信号
         self.list_widget.item_clicked.connect(self.on_item_clicked)

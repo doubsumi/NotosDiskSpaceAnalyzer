@@ -1,0 +1,7 @@
+Metadata-Version: 2.1
+Name: NotosDiskAnalyzer
+Version: 1.0.0
+Summary: A cross-platform disk space analysis tool
+Requires-Dist: PyQt5>=5.15.0
+Requires-Dist: matplotlib>=3.5.0
+Requires-Dist: psutil>=5.9.0
