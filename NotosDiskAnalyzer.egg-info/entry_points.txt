@@ -1,2 +1,0 @@
-[console_scripts]
-diskspace-analyzer = main:main
