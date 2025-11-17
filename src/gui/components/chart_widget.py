@@ -43,7 +43,7 @@ class ChartWidget(QWidget):
         layout.addWidget(self.canvas)
 
     def update_chart(self, analysis_result: AnalysisResult):
-        """更新图表 - 修复重叠问题"""
+        """更新图表 - 修复标题逻辑"""
         self.current_result = analysis_result
         self.figure.clear()
         ax = self.figure.add_subplot(111)
@@ -69,7 +69,7 @@ class ChartWidget(QWidget):
             sizes.append(item.size)
             colors.append(self.get_color(i))
 
-        # 绘制饼图，调整参数避免重叠
+        # 绘制饼图
         if sum(sizes) > 0:
             self.wedges, texts, autotexts = ax.pie(
                 sizes,
@@ -77,9 +77,9 @@ class ChartWidget(QWidget):
                 autopct='%1.1f%%',
                 colors=colors,
                 startangle=90,
-                labeldistance=1.05,  # 调整标签距离
-                pctdistance=0.85,  # 调整百分比距离
-                rotatelabels=True  # 旋转标签避免重叠
+                labeldistance=1.05,
+                pctdistance=0.85,
+                rotatelabels=True
             )
 
             # 设置文本样式
@@ -93,18 +93,62 @@ class ChartWidget(QWidget):
 
             ax.axis('equal')
 
-            # 更新标题
+            # 修复：正确的标题逻辑
             if analysis_result.result_type == "disk":
-                self.chart_title.setText("磁盘使用情况")
-            else:
-                dir_name = analysis_result.path.split('\\')[
-                    -1] if '\\' in analysis_result.path else analysis_result.path
-                self.chart_title.setText(f"目录使用情况: {dir_name}")
+                # 情况1：首页 - 显示所有磁盘汇总
+                self.chart_title.setText("🖥️磁盘使用情况")
+            else:  # 进入具体路径的分析
+                # 清理路径
+                clean_path = analysis_result.path.rstrip('\\/')
+
+                # 判断是否是磁盘根目录
+                is_disk_root = (
+                    # Windows磁盘根目录：C:、D: 等
+                    (len(clean_path) == 2 and clean_path[1] == ':') or
+                    # Linux根目录：/
+                    clean_path == ''
+                )
+
+                if is_disk_root:
+                    # 情况2：磁盘根目录
+                    if clean_path == '':
+                        disk_name = "/"
+                    else:
+                        disk_name = clean_path[0]  # 提取磁盘字母 C: -> C
+                    self.chart_title.setText(f"磁盘 {disk_name} 使用情况")
+                else:
+                    # 情况3：普通目录
+                    dir_name = os.path.basename(clean_path)
+                    self.chart_title.setText(f"目录使用情况: {dir_name}")
         else:
             ax.text(0.5, 0.5, "无数据", ha='center', va='center', transform=ax.transAxes)
             self.chart_title.setText("无数据可用")
 
         self.canvas.draw()
+
+    def extract_directory_name(self, path: str) -> str:
+        """提取目录名称"""
+        if not path:
+            return "未知目录"
+
+        # 移除末尾的路径分隔符
+        path = path.rstrip('\\/')
+
+        # 分割路径并获取最后一部分
+        if '\\' in path:  # Windows路径
+            parts = path.split('\\')
+        elif '/' in path:  # Linux路径
+            parts = path.split('/')
+        else:
+            parts = [path]
+
+        # 获取非空的最后一部分
+        for part in reversed(parts):
+            if part and part not in ['', '\\', '/']:
+                return part
+
+        # 如果都是空，返回根目录标识
+        return "根目录"
 
     def on_chart_click(self, event):
         """处理饼图点击事件 - 支持右键菜单"""
