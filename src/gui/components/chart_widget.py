@@ -25,6 +25,7 @@ class ChartWidget(QWidget):
         self.current_result = None
         self.wedges = None
         self.is_dark_mode = False
+        self.other_item = False
         self._setup_matplotlib()
         self.init_ui()
 
@@ -57,6 +58,13 @@ class ChartWidget(QWidget):
 
         layout.addWidget(self.canvas)
 
+        # 添加提示标签
+        self.hint_label = QLabel("")
+        self.hint_label.setAlignment(Qt.AlignCenter)
+        self.hint_label.setStyleSheet("color: #666; font-size: 12px; margin: 5px;")
+        self.hint_label.setWordWrap(True)
+        layout.addWidget(self.hint_label)
+
     def update_chart(self, analysis_result: AnalysisResult):
         """更新图表 - 使用Settings配置"""
         self.current_result = analysis_result
@@ -80,6 +88,11 @@ class ChartWidget(QWidget):
         if sum(sizes) > 0:
             self._draw_pie_chart(ax, labels, sizes, colors)
             self.update_chart_title(analysis_result)
+
+            # 如果有"其他"类别，显示提示
+            if self.other_item:
+                hint_text = f"💡 \"其他\"项是小于2%的项占比之和，点击\"其他\"项的效果等同于其中最大的目录/文件，可在目录列表中查看其他目录/文件"
+                self.hint_label.setText(hint_text)
         else:
             self._show_no_data_message(ax)
             self.chart_title.setText("无数据可用")
@@ -107,12 +120,33 @@ class ChartWidget(QWidget):
         sizes = []
         colors = []
 
-        for i, item in enumerate(items):
-            # 处理文件名显示
+        # 计算总大小
+        total_size = sum(item.size for item in items)
+
+        # 分离主要项目和其他项目
+        main_items = []
+        other_size = 0
+
+        for item in items:
+            percentage = (item.size / total_size) * 100
+            if percentage > 2:
+                main_items.append(item)
+            else:
+                other_size += item.size
+
+        # 添加主要项目
+        for i, item in enumerate(main_items):
             label = f"{self.shorten_text(item.name, 8)}\n{self.format_size_short(item.size)}"
             labels.append(label)
             sizes.append(item.size)
             colors.append(self.get_color(i))
+
+        # 添加"其他"类别
+        if other_size > 0:
+            self.other_item = True
+            labels.append("其他")
+            sizes.append(other_size)
+            colors.append(self.get_color(len(main_items)))  # 使用下一个颜色
 
         return labels, sizes, colors
 

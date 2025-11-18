@@ -22,7 +22,7 @@ class Settings:
     ]
 
     # 分析配置
-    MAX_DIRECTORY_ITEMS = 10  # 最大显示目录项数
+    MAX_DIRECTORY_ITEMS = 50  # 最大显示目录项数，小于2%已实际影响显示，所以最大50个
     SCAN_TIMEOUT = 30  # 扫描超时时间(秒)
 
     @classmethod
