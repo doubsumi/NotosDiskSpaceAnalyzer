@@ -125,14 +125,20 @@ class ChartWidget(QWidget):
 
         # 分离主要项目和其他项目
         main_items = []
+        other_count = 0  # 记录数量
         other_size = 0
+        largest_other_item = None  # 记录最大的其他项
 
         for item in items:
             percentage = (item.size / total_size) * 100
             if percentage > 2:
                 main_items.append(item)
             else:
+                other_count += 1
                 other_size += item.size
+                # 更新最大的其他项
+                if largest_other_item is None or item.size > largest_other_item.size:
+                    largest_other_item = item
 
         # 添加主要项目
         for i, item in enumerate(main_items):
@@ -141,12 +147,21 @@ class ChartWidget(QWidget):
             sizes.append(item.size)
             colors.append(self.get_color(i))
 
-        # 添加"其他"类别
+        # 添加"其他"类别 - 根据其他项数量判断
         if other_size > 0:
-            self.other_item = True
-            labels.append("其他")
-            sizes.append(other_size)
-            colors.append(self.get_color(len(main_items)))  # 使用下一个颜色
+            if other_count == 1 and largest_other_item:
+                # 其他项只有1项，直接显示该项
+                label = f"{self.shorten_text(largest_other_item.name, 8)}\n{self.format_size_short(largest_other_item.size)}"
+                labels.append(label)
+                sizes.append(largest_other_item.size)
+                colors.append(self.get_color(len(main_items)))
+                self.other_item = False
+            else:
+                # 其他项有多个，显示"其他"类别
+                self.other_item = True
+                labels.append("其他")
+                sizes.append(other_size)
+                colors.append(self.get_color(len(main_items)))
 
         return labels, sizes, colors
 
