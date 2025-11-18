@@ -1,10 +1,8 @@
 import sys
-import os
 import traceback
-from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout, QHBoxLayout,
-                             QWidget, QLabel, QProgressBar, QSplitter, QMessageBox)
+from PyQt5.QtWidgets import (QApplication, QMainWindow, QVBoxLayout,
+                             QWidget, QProgressBar, QSplitter, QMessageBox)
 from PyQt5.QtCore import Qt, QTimer
-from PyQt5.QtGui import QPalette, QColor  # 新增导入
 
 from config.style import StyleManager
 from src.services.analysis_service import AnalysisService
@@ -12,6 +10,8 @@ from src.services.navigation_service import NavigationService
 from src.gui.components.navigation_bar import NavigationBar
 from src.gui.components.chart_widget import ChartWidget
 from src.gui.components.list_widget import DirectoryListWidget
+from src.gui.components.custom_title_bar import CustomTitleBar
+from config.settings import Settings
 
 
 class MainWindow(QMainWindow):
@@ -24,6 +24,8 @@ class MainWindow(QMainWindow):
         self.is_analyzing = False
         self.is_dark_mode = False  # 新增：主题状态
 
+        self.setWindowFlags(Qt.FramelessWindowHint)
+
         self.init_ui()
         self.connect_signals()
 
@@ -32,13 +34,12 @@ class MainWindow(QMainWindow):
 
     def init_ui(self):
         """初始化UI"""
-        self.setWindowTitle("磁盘空间分析工具 v1.0")
-        self.setGeometry(100, 100, 1200, 800)
-
-        # 移除自定义窗口标志，使用系统默认标题栏
-        # self.setWindowFlags(Qt.Window | Qt.CustomizeWindowHint | Qt.WindowTitleHint |
-        #                    Qt.WindowMinimizeButtonHint | Qt.WindowMaximizeButtonHint |
-        #                    Qt.WindowCloseButtonHint)
+        # 设置窗口大小并居中
+        screen = QApplication.primaryScreen().geometry()
+        width, height = 1200, 800
+        x = (screen.width() - width) // 2
+        y = (screen.height() - height) // 2
+        self.setGeometry(x, y, width, height)
 
         # 创建中央部件
         central_widget = QWidget()
@@ -46,8 +47,18 @@ class MainWindow(QMainWindow):
 
         # 主布局
         main_layout = QVBoxLayout(central_widget)
-        main_layout.setSpacing(10)
-        main_layout.setContentsMargins(15, 15, 15, 15)
+        main_layout.setSpacing(0)
+        main_layout.setContentsMargins(0, 0, 0, 0)
+
+        # 自定义标题栏
+        self.title_bar = CustomTitleBar(self)
+        main_layout.addWidget(self.title_bar)
+
+        # 内容容器 - 为其他内容添加边距
+        content_container = QWidget()
+        content_layout = QVBoxLayout(content_container)
+        content_layout.setSpacing(10)
+        content_layout.setContentsMargins(15, 10, 15, 15)  # 在这里设置内容边距
 
         # 导航栏
         self.navigation_bar = NavigationBar()
@@ -78,6 +89,7 @@ class MainWindow(QMainWindow):
         content_splitter.setMinimumHeight(500)
 
         main_layout.addWidget(content_splitter, 1)
+        main_layout.addWidget(content_container)
 
         # 状态栏
         self.statusBar().showMessage("准备就绪")
@@ -85,6 +97,7 @@ class MainWindow(QMainWindow):
         # 最后应用主题样式
         self.apply_light_theme()
 
+    # 在 MainWindow 类的 apply_light_theme 方法中修改：
     def apply_light_theme(self):
         """应用浅色主题"""
         self.is_dark_mode = False
@@ -95,15 +108,15 @@ class MainWindow(QMainWindow):
                 background-color: white;
                 color: #212529;
             }
+            /* 标题栏样式 - 与背景同色 */
+            QMainWindow::title {
+                background-color: white;
+                color: #212529;
+            }
             QWidget {
                 background-color: white;
                 color: #212529;
                 font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-            }
-            /* 标题栏样式 */
-            QMainWindow::title {
-                background-color: white;
-                color: #212529;
             }
             QListWidget {
                 background-color: white;
@@ -126,12 +139,77 @@ class MainWindow(QMainWindow):
                 color: #212529;
                 background-color: transparent;
             }
+            /* 进度条样式 - 完全圆角，蓝色填充 */
+            QProgressBar {
+                border: 1px solid #dee2e6;
+                border-radius: 10px;
+                text-align: center;
+                background-color: #f8f9fa;
+                color: #495057;
+                height: 20px;
+            }
+            QProgressBar::chunk {
+                background-color: #007bff;
+                border-radius: 10px;
+            }
+            /* 滚动条样式 - 浅色主题 */
+            QScrollBar:vertical {
+                background-color: #f8f9fa;
+                width: 12px;
+                margin: 0px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #cbd3da;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #adb5bd;
+            }
+            QScrollBar::handle:vertical:pressed {
+                background-color: #6c757d;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+            QScrollBar:horizontal {
+                background-color: #f8f9fa;
+                height: 12px;
+                margin: 0px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #cbd3da;
+                border-radius: 6px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #adb5bd;
+            }
+            QScrollBar::handle:horizontal:pressed {
+                background-color: #6c757d;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                border: none;
+                background: none;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
+            }
         """
         self.setStyleSheet(StyleManager.get_main_style() + light_style)
 
         # 安全地更新图表主题
         if hasattr(self, 'chart_widget'):
             self.chart_widget.apply_theme(False)
+        # 更新标题栏主题
+        if hasattr(self, 'title_bar'):
+            self.title_bar.update_theme(False)
 
     def apply_dark_theme(self):
         """应用暗黑主题"""
@@ -143,15 +221,15 @@ class MainWindow(QMainWindow):
                 background-color: #1a1a1a;
                 color: #e9ecef;
             }
+            /* 标题栏样式 - 与背景同色 */
+            QMainWindow::title {
+                background-color: #1a1a1a;
+                color: #e9ecef;
+            }
             QWidget {
                 background-color: #1a1a1a;
                 color: #e9ecef;
                 font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
-            }
-            /* 标题栏样式 */
-            QMainWindow::title {
-                background-color: #1a1a1a;
-                color: #e9ecef;
             }
             QListWidget {
                 background-color: #252525;
@@ -174,16 +252,70 @@ class MainWindow(QMainWindow):
                 color: #e9ecef;
                 background-color: transparent;
             }
+            /* 进度条样式 - 完全圆角，紫色填充 */
             QProgressBar {
                 background-color: #252525;
                 color: #e9ecef;
                 border: 1px solid #404040;
+                border-radius: 10px;
+                text-align: center;
+                height: 20px;
             }
             QProgressBar::chunk {
-                background-color: #198754;
+                background-color: #6f42c1;
+                border-radius: 10px;
             }
             QSplitter::handle {
                 background-color: #404040;
+            }
+            /* 滚动条样式 - 暗黑主题 */
+            QScrollBar:vertical {
+                background-color: #2d2d2d;
+                width: 12px;
+                margin: 0px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:vertical {
+                background-color: #565656;
+                border-radius: 6px;
+                min-height: 20px;
+            }
+            QScrollBar::handle:vertical:hover {
+                background-color: #6a6a6a;
+            }
+            QScrollBar::handle:vertical:pressed {
+                background-color: #808080;
+            }
+            QScrollBar::add-line:vertical, QScrollBar::sub-line:vertical {
+                border: none;
+                background: none;
+            }
+            QScrollBar::add-page:vertical, QScrollBar::sub-page:vertical {
+                background: none;
+            }
+            QScrollBar:horizontal {
+                background-color: #2d2d2d;
+                height: 12px;
+                margin: 0px;
+                border-radius: 6px;
+            }
+            QScrollBar::handle:horizontal {
+                background-color: #565656;
+                border-radius: 6px;
+                min-width: 20px;
+            }
+            QScrollBar::handle:horizontal:hover {
+                background-color: #6a6a6a;
+            }
+            QScrollBar::handle:horizontal:pressed {
+                background-color: #808080;
+            }
+            QScrollBar::add-line:horizontal, QScrollBar::sub-line:horizontal {
+                border: none;
+                background: none;
+            }
+            QScrollBar::add-page:horizontal, QScrollBar::sub-page:horizontal {
+                background: none;
             }
         """
         self.setStyleSheet(StyleManager.get_main_style() + dark_style)
@@ -191,6 +323,9 @@ class MainWindow(QMainWindow):
         # 安全地更新图表主题
         if hasattr(self, 'chart_widget'):
             self.chart_widget.apply_theme(True)
+        # 更新标题栏主题
+        if hasattr(self, 'title_bar'):
+            self.title_bar.update_theme(True)
 
     def on_theme_toggled(self, is_dark_mode):
         """主题切换处理"""
@@ -327,8 +462,8 @@ def main():
         sys.excepthook = exception_hook
 
         app = QApplication(sys.argv)
-        app.setApplicationName("磁盘空间分析工具")
-        app.setApplicationVersion("1.0.0")
+        app.setApplicationName(Settings.APP_NAME)
+        app.setApplicationVersion(Settings.APP_VERSION)
 
         # 检查依赖
         try:

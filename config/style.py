@@ -1,9 +1,9 @@
 class StyleManager:
-    """样式管理器 - 统一白色背景"""
+    """样式管理器 - 统一背景色"""
 
     @staticmethod
     def get_main_style():
-        """获取主样式表 - 统一白色背景"""
+        """获取主样式表 - 统一背景色"""
         return """
             QMainWindow {
                 background-color: white;
@@ -12,23 +12,7 @@ class StyleManager:
                 font-family: "Microsoft YaHei", "Segoe UI", Arial, sans-serif;
                 background-color: white;
             }
-            QPushButton {
-                background-color: #007bff;
-                border: none;
-                color: white;
-                padding: 8px 16px;
-                text-align: center;
-                font-size: 14px;
-                margin: 4px 2px;
-                border-radius: 4px;
-            }
-            QPushButton:hover {
-                background-color: #0056b3;
-            }
-            QPushButton:disabled {
-                background-color: #6c757d;
-                color: #adb5bd;
-            }
+            /* 导航按钮样式已在 navigation_bar.py 中单独设置 */
             QListWidget {
                 background-color: white;
                 border: 1px solid #dee2e6;
@@ -48,17 +32,7 @@ class StyleManager:
                 color: white;
                 border-radius: 2px;
             }
-            QProgressBar {
-                border: 1px solid #ced4da;
-                border-radius: 4px;
-                text-align: center;
-                background-color: white;
-                color: #495057;
-            }
-            QProgressBar::chunk {
-                background-color: #28a745;
-                border-radius: 3px;
-            }
+            /* 进度条样式已在主题方法中单独设置 */
             QLabel {
                 color: #212529;
                 background-color: transparent;

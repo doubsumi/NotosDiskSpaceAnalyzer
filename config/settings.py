@@ -6,8 +6,8 @@ class Settings:
     """应用配置类"""
 
     # 应用信息
-    APP_NAME = "磁盘空间分析工具"
-    APP_VERSION = "1.0.0"
+    APP_NAME = "Notos磁盘空间分析工具"
+    APP_VERSION = "V1.1.0"
     ORGANIZATION = "DiskSpaceAnalyzer"
 
     # 文件大小单位
@@ -22,7 +22,7 @@ class Settings:
     ]
 
     # 分析配置
-    MAX_DIRECTORY_ITEMS = 50  # 最大显示目录项数
+    MAX_DIRECTORY_ITEMS = 10  # 最大显示目录项数
     SCAN_TIMEOUT = 30  # 扫描超时时间(秒)
 
     @classmethod
