@@ -8,8 +8,8 @@
 
 一个现代化的跨平台磁盘空间分析工具，提供直观的可视化界面来帮助您深解磁盘中各个目录和文件的占用空间大小。
 
-![NotosDiskSpaceAnalyzer 主界面](https://github.com/doubsumi/my-project-assets/blob/main/IMG-NotosDiskSpaceAnalyzer/index.png)
-![NotosDiskSpaceAnalyzer 主界面_深色模式](https://github.com/doubsumi/my-project-assets/blob/main/IMG-NotosDiskSpaceAnalyzer/1.png)
+![NotosDiskSpaceAnalyzer 主界面](https://github.com/doubsumi/my-project-assets/blob/170fb0419305fc9064bd85cf5229d3daf45b74d5/IMG-NotosDiskSpaceAnalyzer/Index.png)
+![NotosDiskSpaceAnalyzer 主界面_深色模式](https://github.com/doubsumi/my-project-assets/blob/170fb0419305fc9064bd85cf5229d3daf45b74d5/IMG-NotosDiskSpaceAnalyzer/1.png)
 *主界面展示 - 支持浅色/深色双主题*
 
 
