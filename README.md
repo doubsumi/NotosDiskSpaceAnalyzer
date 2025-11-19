@@ -6,7 +6,7 @@
 [![GitHub Issues](https://img.shields.io/github/issues/doubsumi/NotosDiskSpaceAnalyzer)](https://github.com/doubsumi/NotosDiskSpaceAnalyzer/issues)
 [![GitHub Stars](https://img.shields.io/github/stars/doubsumi/NotosDiskSpaceAnalyzer)](https://github.com/doubsumi/NotosDiskSpaceAnalyzer/stargazers)
 
-一个现代化的跨平台磁盘空间分析工具，提供直观的可视化界面来帮助您深解磁盘中各个目录和文件的占用空间大小。
+一个现代化的跨平台磁盘空间分析工具，提供直观的可视化界面来帮助您查看磁盘中各个目录和文件的占用空间大小。
 
 ![NotosDiskSpaceAnalyzer 主界面](https://raw.githubusercontent.com/doubsumi/my-project-assets/main/IMG-NotosDiskSpaceAnalyzer/1.png)
 ![NotosDiskSpaceAnalyzer 主界面_深色模式](https://raw.githubusercontent.com/doubsumi/my-project-assets/main/IMG-NotosDiskSpaceAnalyzer/Index.png)
