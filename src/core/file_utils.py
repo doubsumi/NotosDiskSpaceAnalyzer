@@ -19,17 +19,7 @@ class FileUtils:
     @staticmethod
     def get_disk_usage_simple(path: str) -> tuple:
         """简单磁盘使用统计（备用方法）"""
-        try:
-            if not os.path.exists(path):
-                return 0, 0, 0
-
-            # 这是一个简化的实现，实际项目中可能需要更复杂的逻辑
-            total = psutil.disk_usage(path).total
-            used = psutil.disk_usage(path).used
-            free = psutil.disk_usage(path).free
-            return total, used, free
-        except:
-            return 0, 0, 0
+        pass
 
     @staticmethod
     def list_directory(path: str) -> List[str]:
