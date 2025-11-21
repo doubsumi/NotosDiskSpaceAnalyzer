@@ -7,7 +7,6 @@ from matplotlib.backends.backend_qt5agg import FigureCanvasQTAgg as FigureCanvas
 from matplotlib.figure import Figure
 from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QMenu, QAction
 from PyQt5.QtCore import Qt, pyqtSignal
-from PyQt5.QtGui import QClipboard
 from PyQt5.QtWidgets import QApplication
 
 from src.models.analysis_result import AnalysisResult

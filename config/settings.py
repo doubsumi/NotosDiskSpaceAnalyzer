@@ -7,8 +7,8 @@ class Settings:
 
     # 应用信息
     APP_NAME = "Notos磁盘空间分析工具"
-    APP_VERSION = "V1.1.0"
-    ORGANIZATION = "DiskSpaceAnalyzer"
+    APP_VERSION = "V1.1.1"
+    ORGANIZATION = "NotosDiskSpaceAnalyzer"
 
     # 文件大小单位
     SIZE_UNITS = ["B", "KB", "MB", "GB", "TB"]

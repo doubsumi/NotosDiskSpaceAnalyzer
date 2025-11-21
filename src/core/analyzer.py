@@ -1,8 +1,6 @@
 import os
 import platform
-import math
-from pathlib import Path
-from typing import Dict, List
+from typing import List
 from PyQt5.QtCore import QThread, pyqtSignal
 
 from src.models.disk_item import DiskItem
