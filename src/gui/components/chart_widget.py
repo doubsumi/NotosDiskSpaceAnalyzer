@@ -9,7 +9,7 @@ from PyQt5.QtWidgets import QWidget, QVBoxLayout, QLabel, QMenu, QAction
 from PyQt5.QtCore import Qt, pyqtSignal
 from PyQt5.QtWidgets import QApplication
 
-from src.models.analysis_result import AnalysisResult
+from src.services.analysis_service import AnalysisResult
 from config.settings import Settings
 
 
@@ -17,12 +17,14 @@ class ChartWidget(QWidget):
     """图表组件 - 使用Settings配置优化"""
 
     # 添加点击信号
-    chart_item_clicked = pyqtSignal(object)  # 传递DiskItem
+    chart_item_clicked = pyqtSignal(object)  # 传递 DisplayItem
 
     def __init__(self, parent=None):
         super().__init__(parent)
         self.current_result = None
         self.wedges = None
+        #: 与 ``self.wedges`` 一一对应的条目；"其他"楔形为 ``None``（聚合项无真实路径，P0-6）。
+        self.wedge_items = []
         self.is_dark_mode = False
         self.other_item = False
         self._setup_matplotlib()
@@ -67,6 +69,8 @@ class ChartWidget(QWidget):
     def update_chart(self, analysis_result: AnalysisResult):
         """更新图表 - 使用Settings配置"""
         self.current_result = analysis_result
+        self.wedge_items = []
+        self.other_item = False
         self.figure.clear()
         ax = self.figure.add_subplot(111)
 
@@ -75,25 +79,28 @@ class ChartWidget(QWidget):
 
         if not analysis_result.items:
             self._show_no_data_message(ax)
+            self.hint_label.setText("")
             self.update_title_style()
             self.canvas.draw()
             return
 
-        # 准备饼图数据
-        display_items = analysis_result.items[:Settings.MAX_DIRECTORY_ITEMS]
-        labels, sizes, colors = self._prepare_chart_data(display_items)
+        # 准备饼图数据（wedge 与 wedge_items 一一对应，P0-6）
+        labels, sizes, colors = self._prepare_chart_data(analysis_result)
 
         # 绘制饼图
         if sum(sizes) > 0:
             self._draw_pie_chart(ax, labels, sizes, colors)
             self.update_chart_title(analysis_result)
 
-            # 如果有"其他"类别，显示提示
             if self.other_item:
-                hint_text = f"💡 \"其他\"项是小于2%的项占比之和，点击\"其他\"项的效果等同于其中最大的目录/文件，可在目录列表中查看其他目录/文件"
-                self.hint_label.setText(hint_text)
+                self.hint_label.setText(
+                    '💡 "其他"为占比小于 2% 的条目合计（Logical Size），无法直接进入'
+                )
+            else:
+                self.hint_label.setText("")
         else:
             self._show_no_data_message(ax)
+            self.hint_label.setText("")
             self.chart_title.setText("无数据可用")
 
         self.canvas.draw()
@@ -113,54 +120,41 @@ class ChartWidget(QWidget):
         ax.text(0.5, 0.5, "无数据", ha='center', va='center',
                 transform=ax.transAxes, color=text_color, fontsize=12)
 
-    def _prepare_chart_data(self, items):
-        """准备图表数据"""
+    def _prepare_chart_data(self, analysis_result):
+        """准备图表数据，并建立与 wedge 一一对应的 ``wedge_items``（P0-6）。
+
+        * ``all_total`` 采用 ``analysis_result.total_size``（Logical Size，P0-5）。
+        * 主项 = 占比 > 2% 的条目；``other = all_total - 主项合计``。
+        * "其他"是聚合项，无真实路径，因此映射为 ``None``，不得指向任何真实 item。
+        """
         labels = []
         sizes = []
         colors = []
+        self.wedge_items = []
+        self.other_item = False
 
-        # 计算总大小
-        total_size = sum(item.size for item in items)
+        all_total = analysis_result.total_size
+        if all_total <= 0:
+            return labels, sizes, colors
 
-        # 分离主要项目和其他项目
-        main_items = []
-        other_count = 0  # 记录数量
-        other_size = 0
-        largest_other_item = None  # 记录最大的其他项
+        items = analysis_result.items[:Settings.MAX_DIRECTORY_ITEMS]
+        main_items = [item for item in items if item.size / all_total * 100 > 2]
 
-        for item in items:
-            percentage = (item.size / total_size) * 100
-            if percentage > 2:
-                main_items.append(item)
-            else:
-                other_count += 1
-                other_size += item.size
-                # 更新最大的其他项
-                if largest_other_item is None or item.size > largest_other_item.size:
-                    largest_other_item = item
-
-        # 添加主要项目
         for i, item in enumerate(main_items):
             label = f"{self.shorten_text(item.name, 8)}\n{self.format_size_short(item.size)}"
             labels.append(label)
             sizes.append(item.size)
             colors.append(self.get_color(i))
+            self.wedge_items.append(item)
 
-        # 添加"其他"类别 - 根据其他项数量判断
+        main_total = sum(item.size for item in main_items)
+        other_size = all_total - main_total
         if other_size > 0:
-            if other_count == 1 and largest_other_item:
-                # 其他项只有1项，直接显示该项
-                label = f"{self.shorten_text(largest_other_item.name, 8)}\n{self.format_size_short(largest_other_item.size)}"
-                labels.append(label)
-                sizes.append(largest_other_item.size)
-                colors.append(self.get_color(len(main_items)))
-                self.other_item = False
-            else:
-                # 其他项有多个，显示"其他"类别
-                self.other_item = True
-                labels.append("其他")
-                sizes.append(other_size)
-                colors.append(self.get_color(len(main_items)))
+            self.other_item = True
+            labels.append("其他")
+            sizes.append(other_size)
+            colors.append(self.get_color(len(main_items)))
+            self.wedge_items.append(None)
 
         return labels, sizes, colors
 
@@ -227,26 +221,30 @@ class ChartWidget(QWidget):
 
     def _handle_left_click(self, event):
         """处理左键点击"""
-        if not (self.wedges and self.current_result):
+        if not self.wedges:
             return
 
-        for i, wedge in enumerate(self.wedges):
-            if wedge.contains_point([event.x, event.y]) and i < len(self.current_result.items):
-                clicked_item = self.current_result.items[i]
-                if clicked_item.is_clickable:
-                    self.chart_item_clicked.emit(clicked_item)
-                break
+        index = self._get_clicked_wedge_index(event)
+        if index == -1 or index >= len(self.wedge_items):
+            return
+        clicked_item = self.wedge_items[index]
+        # "其他"楔形映射为 None，忽略；不可进入的项也忽略
+        if clicked_item is not None and clicked_item.is_clickable:
+            self.chart_item_clicked.emit(clicked_item)
 
     def show_chart_context_menu(self, event):
         """显示饼图的右键菜单"""
-        if not self.wedges or not self.current_result:
+        if not self.wedges:
             return
 
         clicked_index = self._get_clicked_wedge_index(event)
-        if clicked_index == -1:
+        if clicked_index == -1 or clicked_index >= len(self.wedge_items):
             return
 
-        clicked_item = self.current_result.items[clicked_index]
+        clicked_item = self.wedge_items[clicked_index]
+        # "其他"是聚合项，没有真实路径，不弹出菜单（P0-6）
+        if clicked_item is None:
+            return
         self._create_context_menu(event, clicked_item)
 
     def _get_clicked_wedge_index(self, event):

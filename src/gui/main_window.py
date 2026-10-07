@@ -7,6 +7,7 @@ from PyQt5.QtCore import Qt, QTimer
 from config.style import StyleManager
 from src.services.analysis_service import AnalysisService
 from src.services.navigation_service import NavigationService
+from src.core.scan_models import ScanStatus
 from src.gui.components.navigation_bar import NavigationBar
 from src.gui.components.chart_widget import ChartWidget
 from src.gui.components.list_widget import DirectoryListWidget
@@ -17,12 +18,25 @@ from config.settings import Settings
 class MainWindow(QMainWindow):
     """主窗口 - 支持标题栏主题统一"""
 
+    #: 进度批更新间隔（ms），落在 §12 P1-4 要求的 100~250ms 区间内。
+    _PROGRESS_INTERVAL_MS = 200
+    #: 状态栏最多列出的「受影响目录」条数，超出用省略号收尾。
+    _MAX_AFFECTED_IN_STATUS = 3
+
     def __init__(self):
         super().__init__()
         self.analysis_service = AnalysisService()
         self.navigation_service = NavigationService()
         self.is_analyzing = False
         self.is_dark_mode = False  # 新增：主题状态
+        self._closing = False  # 关闭流程标志（§12 P1-2）
+
+        # 进度批更新（§12 P1-4）：只保留最新进度，按固定间隔刷新一次 UI
+        self._pending_progress = None
+        self._progress_timer = QTimer(self)
+        self._progress_timer.setSingleShot(True)
+        self._progress_timer.setInterval(self._PROGRESS_INTERVAL_MS)
+        self._progress_timer.timeout.connect(self._flush_progress)
 
         self.setWindowFlags(Qt.FramelessWindowHint)
 
@@ -335,14 +349,10 @@ class MainWindow(QMainWindow):
             self.apply_light_theme()
 
     def stop_analysis(self):
-        """停止分析"""
+        """请求停止分析；UI 复位交由 analysis_finished 回调完成（§12 P1-1）。"""
         if self.is_analyzing:
             self.statusBar().showMessage("正在停止分析...")
             self.analysis_service.stop_analysis()
-            self.is_analyzing = False
-            self.progress_bar.setVisible(False)
-            self.navigation_bar.set_stop_button_visible(False)
-            self.statusBar().showMessage("分析已停止")
 
     def connect_signals(self):
         """连接信号槽"""
@@ -366,23 +376,38 @@ class MainWindow(QMainWindow):
 
     def start_initial_analysis(self):
         """开始初始分析"""
+        if self._closing:
+            return
         if not self.is_analyzing:
             self.analysis_service.analyze_disks()
 
     def on_analysis_started(self):
         """分析开始"""
         self.is_analyzing = True
-        self.progress_bar.setVisible(True)
+        # 默认确定性进度条（与 V1 一致）；worker 报告 percent=-1 时会切回 busy 态。
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
         self.navigation_bar.set_stop_button_visible(True)
         self.statusBar().showMessage("正在分析...")
 
     def on_analysis_finished(self, result):
         """分析完成"""
         self.is_analyzing = False
+        self._progress_timer.stop()
+        self._pending_progress = None
         self.progress_bar.setVisible(False)
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setValue(0)
         self.navigation_bar.set_stop_button_visible(False)
+
+        status = getattr(result, "status", ScanStatus.COMPLETED)
+        if status is ScanStatus.CANCELLED:
+            status_text = "分析已取消"
+        elif status is ScanStatus.PARTIAL:
+            status_text = self._partial_status_text(result)
+        else:
+            status_text = "分析完成"
 
         try:
             self.chart_widget.update_chart(result)
@@ -393,18 +418,47 @@ class MainWindow(QMainWindow):
 
             is_at_root = self.navigation_service.current_path is None
             self.navigation_bar.set_navigation_buttons(not is_at_root)
-            self.statusBar().showMessage("分析完成")
+            self.statusBar().showMessage(status_text)
         except Exception as e:
             self.statusBar().showMessage(f"更新UI时出错: {str(e)}")
 
+    def _partial_status_text(self, result):
+        """构造 PARTIAL 状态文案：说明原因，能定位时列出受影响目录。"""
+        reason = getattr(result, "skip_reason", None) or "访问受限"
+        paths = list(getattr(result, "affected_paths", None) or [])
+        if not paths:
+            return f"分析完成（部分内容因{reason}被跳过，不影响当前页面显示）"
+        shown = paths[: self._MAX_AFFECTED_IN_STATUS]
+        detail = "、".join(shown)
+        if len(paths) > self._MAX_AFFECTED_IN_STATUS:
+            detail += "、……"
+        return f"分析完成（部分内容因{reason}被跳过，受影响目录包括：{detail}）"
+
     def on_progress_updated(self, progress, current_item):
-        """进度更新"""
-        self.progress_bar.setValue(progress)
-        self.statusBar().showMessage(f"正在分析: {current_item}")
+        """接收进度信号；只暂存最新值，由定时器批量刷新 UI（§12 P1-4）。"""
+        self._pending_progress = (progress, current_item)
+        if not self._progress_timer.isActive():
+            self._progress_timer.start()
+
+    def _flush_progress(self):
+        """把暂存的进度一次性应用到 UI（percent < 0 表示总量未知，显示 busy 态）。"""
+        if self._pending_progress is None:
+            return
+        progress, current_item = self._pending_progress
+        self._pending_progress = None
+        if progress < 0:
+            self.progress_bar.setRange(0, 0)
+        else:
+            self.progress_bar.setRange(0, 100)
+            self.progress_bar.setValue(progress)
+        self.statusBar().showMessage(current_item)
 
     def on_error_occurred(self, error_message):
         """错误处理"""
         self.is_analyzing = False
+        self._progress_timer.stop()
+        self._pending_progress = None
+        self.progress_bar.setRange(0, 100)
         self.progress_bar.setVisible(False)
         QMessageBox.warning(self, "错误", error_message)
         self.statusBar().showMessage("分析出错")
@@ -441,11 +495,17 @@ class MainWindow(QMainWindow):
             QMessageBox.warning(self, "错误", f"返回首页失败: {str(e)}")
 
     def closeEvent(self, event):
-        """关闭事件 - 确保安全退出"""
-        self.analysis_service.stop_analysis()
-        # 等待分析停止
-        import time
-        time.sleep(0.5)
+        """关闭窗口 - 取消所有扫描并等待线程退出，保证进程一定能结束（P0）。
+
+        旧实现用 QTimer 轮询 ``is_running()``：一旦某个 worker 因 ``finished``
+        信号与 connect 的时序问题滞留在 ``_retired``，``is_running()`` 会永久
+        为真，窗口就再也关不掉（点击关闭无反应）。改为有界阻塞：
+        cancel → wait → 关闭，超时线程由 ``shutdown`` 兜底终止。
+        """
+        self._closing = True
+        self._progress_timer.stop()
+        self._pending_progress = None
+        self.analysis_service.shutdown()
         event.accept()
 
 
