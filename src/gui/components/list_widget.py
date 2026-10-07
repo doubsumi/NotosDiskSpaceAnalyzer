@@ -6,6 +6,10 @@ import platform
 import subprocess
 
 
+#: 悬停提示补充：向用户解释为何在系统文件管理器里看不到该项目（P0-2：默认扫描隐藏项）。
+HIDDEN_HINT = "\n系统隐藏项，通常为系统休眠/虚拟内存文件，资源管理器默认隐藏，不可操作，但占用实际内存"
+
+
 class DirectoryListWidget(QListWidget):
     """目录列表组件 - 修复右键菜单问题"""
 
@@ -37,15 +41,19 @@ class DirectoryListWidget(QListWidget):
 
             # 根据类型设置不同的样式和提示
             if item.item_type == "disk":
-                list_item.setToolTip(f"点击进入磁盘根目录")
+                tooltip = "点击进入磁盘根目录"
             elif item.item_type == "directory":
-                list_item.setToolTip(f"点击进入目录: {item.name}\n右键菜单可打开文件浏览器")
+                tooltip = f"点击进入目录: {item.name}\n右键菜单可打开文件浏览器"
             else:  # file
-                list_item.setToolTip(f"文件: {item.name}\n大小: {item.formatted_size}")
+                tooltip = f"文件: {item.name}\n大小: {item.formatted_size}"
                 # 文件不可点击进入
                 if not item.is_clickable:
                     list_item.setFlags(list_item.flags() & ~Qt.ItemIsEnabled)
                     list_item.setForeground(Qt.gray)
+
+            if item.is_hidden:
+                tooltip += HIDDEN_HINT
+            list_item.setToolTip(tooltip)
 
             self.addItem(list_item)
 
