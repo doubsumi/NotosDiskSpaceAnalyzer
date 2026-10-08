@@ -46,12 +46,15 @@ from src.core.scan_models import ItemType, ScanEntry
 NO_EXTENSION = "(none)"
 
 
-@dataclass
+@dataclass(slots=True)
 class DirectoryStats:
     """单个目录的统计结果。
 
     ``size`` / ``file_count`` / ``directory_count`` 为**子树合计**（finalize 后有效）；
     ``own_*`` 为扫描期累加的内部字段（仅该目录的直接内容）。
+
+    O6a：``slots`` 去掉每实例 ``__dict__``——37.8k 目录实测省 ~30% 驻留
+    （100 万目录 ≈ 350 MB → ~230 MB）。
     """
 
     path: str
@@ -64,7 +67,7 @@ class DirectoryStats:
     own_directory_count: int = 0
 
 
-@dataclass
+@dataclass(slots=True)
 class FileTypeStats:
     """单个扩展名的统计结果。"""
 
@@ -83,13 +86,69 @@ class DirectoryAggregator:
         self._identities: set = set()
         self._finalized = False
         self._dirs[root_path] = DirectoryStats(path=root_path, parent_path=None)
+        # O5：父目录查表缓存。DFS 前序保证同一目录的文件条目连续出现，
+        # 因此按 parent_path 记忆上一次命中的 DirectoryStats，命中率≈100%。
+        # _dirs 中的对象只增不替换，缓存引用始终有效，无需失效逻辑。
+        self._last_parent_path: Optional[str] = None
+        self._last_parent_stats: Optional[DirectoryStats] = None
+        # O6b：release_scratch() 置位后，中间数据已释放，consume 直接忽略
+        # （正常流程中扫描结束后不会再有 consume；置位仅为防御误用）。
+        self._released = False
 
     # ------------------------------------------------------------------
     def consume(self, entry: ScanEntry) -> None:
+        if self._released:
+            return
         if entry.item_type is ItemType.DIRECTORY:
-            self._add_directory(entry.path, entry.parent_path)
+            self.add_directory(entry.path, entry.parent_path)
         elif entry.item_type is ItemType.FILE:
-            self._add_file(entry)
+            self.add_file(entry.parent_path, entry.size, entry.file_identity)
+
+    # ------------------------------------------------------------------
+    def add_file(self, parent_path: str, size: int, identity=None) -> None:
+        """快速累加一个文件（不经 ``ScanEntry``，供扫描快速路径调用）。
+
+        语义与 ``consume(ScanEntry(FILE))`` 完全一致，只是省去 ScanEntry
+        构造；仅在扫描期间调用（``release_scratch`` 之后不再使用）。
+        """
+        if identity is not None:
+            if identity in self._identities:
+                return
+            self._identities.add(identity)
+        # O5：命中缓存时免一次路径哈希查表（DFS 前序下命中率≈100%）。
+        if parent_path != self._last_parent_path:
+            parent = self._dirs.get(parent_path)
+            if parent is None:
+                parent = DirectoryStats(path=parent_path, parent_path=None)
+                self._dirs[parent_path] = parent
+            self._last_parent_path = parent_path
+            self._last_parent_stats = parent
+        parent = self._last_parent_stats
+        parent.own_size += size
+        parent.own_file_count += 1
+        self._finalized = False
+
+    def add_directory(self, path: str, parent_path: Optional[str]) -> None:
+        """快速累加一个目录（不经 ``ScanEntry``，供扫描快速路径调用）。
+
+        语义与 ``consume(ScanEntry(DIRECTORY))`` 完全一致，省去 ScanEntry 构造。
+        """
+        if path not in self._dirs:
+            self._dirs[path] = DirectoryStats(path=path, parent_path=parent_path)
+            if parent_path is not None:
+                self._children.setdefault(parent_path, []).append(path)
+        # O5：父目录查表缓存同样适用于目录条目——DFS 前序下同父目录的
+        # 子目录连续出现，命中时免一次路径哈希（与 add_file 共享缓存字段，
+        # 缓存的永远是 _dirs[parent_path] 对象本身，语义不变）。
+        if parent_path is not None:
+            if parent_path != self._last_parent_path:
+                parent = self._dirs.get(parent_path)
+                self._last_parent_path = parent_path
+                self._last_parent_stats = parent
+            parent = self._last_parent_stats
+            if parent is not None:
+                parent.own_directory_count += 1
+        self._finalized = False
 
     # ------------------------------------------------------------------
     def finalize(self) -> None:
@@ -114,6 +173,24 @@ class DirectoryAggregator:
         self._finalized = True
 
     # ------------------------------------------------------------------
+    def release_scratch(self) -> None:
+        """释放扫描期中间数据（O6b）：``own_*`` 清零、``_children`` / 去重集丢弃。
+
+        仅在**结果装配完成且目录表已交由缓存 / 展示层持有**后调用——
+        ``_dirs`` 本身（子树合计）原样保留，``finalize`` 结果不受影响。
+        调用后不得再 ``consume``（防御：直接忽略）；``children_of`` 随之失效。
+        不能并入 ``finalize``：``finalize → consume → finalize`` 的增量重算
+        依赖 ``own_*`` 存活（有单测兜底）。
+        """
+        self._released = True
+        self._children.clear()
+        self._identities.clear()
+        for node in self._dirs.values():
+            node.own_size = 0
+            node.own_file_count = 0
+            node.own_directory_count = 0
+
+    # ------------------------------------------------------------------
     @property
     def root(self) -> DirectoryStats:
         self.finalize()
@@ -131,6 +208,16 @@ class DirectoryAggregator:
     def directory_count(self) -> int:
         return self.root.directory_count
 
+    @property
+    def nodes(self) -> Dict[str, DirectoryStats]:
+        """整张目录表（键 = 原始路径，含根）。供 DirectoryCache 合并（O8）。
+
+        调用即 finalize，保证每个节点为子树合计；返回聚合器内部字典本身
+        （非副本），缓存直接持有这些 DirectoryStats 对象，不额外复制。
+        """
+        self.finalize()
+        return self._dirs
+
     def stats_for(self, path: str) -> Optional[DirectoryStats]:
         self.finalize()
         return self._dirs.get(path)
@@ -141,31 +228,6 @@ class DirectoryAggregator:
         children = [self._dirs[p] for p in self._children.get(path, ()) if p in self._dirs]
         children.sort(key=lambda node: (-node.size, node.path))
         return children
-
-    # ------------------------------------------------------------------
-    def _add_directory(self, path: str, parent_path: Optional[str]) -> None:
-        if path not in self._dirs:
-            self._dirs[path] = DirectoryStats(path=path, parent_path=parent_path)
-            if parent_path is not None:
-                self._children.setdefault(parent_path, []).append(path)
-        parent = self._dirs.get(parent_path) if parent_path is not None else None
-        if parent is not None:
-            parent.own_directory_count += 1
-        self._finalized = False
-
-    def _add_file(self, entry: ScanEntry) -> None:
-        identity = entry.file_identity
-        if identity is not None:
-            if identity in self._identities:
-                return
-            self._identities.add(identity)
-        parent = self._dirs.get(entry.parent_path)
-        if parent is None:
-            parent = DirectoryStats(path=entry.parent_path, parent_path=None)
-            self._dirs[entry.parent_path] = parent
-        parent.own_size += entry.size
-        parent.own_file_count += 1
-        self._finalized = False
 
 
 class FileTypeAggregator:

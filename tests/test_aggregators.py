@@ -103,6 +103,31 @@ def test_directory_incremental_finalize_is_stable():
     assert aggregator.total_size == 15
 
 
+def test_release_scratch_preserves_totals_and_blocks_consume():
+    """O6b：release 后子树合计原样保留（缓存层继续可用），后续 consume 被忽略。"""
+    aggregator = DirectoryAggregator(ROOT)
+    for entry in build_tree_entries():
+        aggregator.consume(entry)
+    before = {
+        path: (node.size, node.file_count, node.directory_count)
+        for path, node in aggregator.nodes.items()
+    }
+
+    aggregator.release_scratch()
+
+    after = {
+        path: (node.size, node.file_count, node.directory_count)
+        for path, node in aggregator.nodes.items()
+    }
+    assert after == before
+    assert all(node.own_size == 0 for node in aggregator.nodes.values())
+    assert aggregator._children == {}
+    assert aggregator._identities == set()
+    # release 后 consume 被忽略：合计不变
+    aggregator.consume(file_entry(f"{ROOT}\\late.bin", ROOT, 999))
+    assert aggregator.total_size == before[ROOT][0]
+
+
 def test_file_type_statistics():
     aggregator = FileTypeAggregator()
     aggregator.consume(file_entry(f"{ROOT}\\a.JPG", ROOT, 300))

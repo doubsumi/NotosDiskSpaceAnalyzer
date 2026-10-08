@@ -154,14 +154,16 @@ def test_main_window_progress_is_batched(qapp):
     assert window.statusBar().currentMessage() == "c"
 
 
-def test_main_window_unknown_progress_shows_busy(qapp):
+def test_main_window_unknown_progress_keeps_determinate_bar(qapp):
+    """总量未知（-1）不切换滚动 busy 态：保持确定性进度条位置，只更新状态栏。"""
     from src.gui.main_window import MainWindow
 
     window = MainWindow()
     window.on_progress_updated(-1, "正在扫描: x")
     window._flush_progress()
 
-    assert window.progress_bar.maximum() == 0  # busy 态
+    assert window.progress_bar.maximum() == 100  # 不切换 busy（0,0）
+    assert window.statusBar().currentMessage() == "正在扫描: x"
 
 
 def test_main_window_status_text_by_scan_status(qapp):
@@ -190,6 +192,82 @@ def test_main_window_close_is_non_blocking_when_idle(qapp):
     window.closeEvent(event)
 
     assert event.isAccepted()
+
+
+# ----------------------------------------------------------------------
+# 限时驻留导航（方案2）：预览先缓冲，驻留到期才跳；正式结果直跳
+# ----------------------------------------------------------------------
+
+def _nav_window(qapp, monkeypatch):
+    """构造 MainWindow：桩掉导航与扫描，返回 (window, nav_calls, started)。"""
+    from src.gui.main_window import MainWindow
+
+    window = MainWindow()
+    nav_calls = []
+    monkeypatch.setattr(
+        window.navigation_service, "navigate_to", lambda p: nav_calls.append(p)
+    )
+    started = []
+    monkeypatch.setattr(
+        window.analysis_service,
+        "analyze_directory",
+        lambda path, silent=False: started.append((path, silent)),
+    )
+    # 初始分析延迟到事件循环，测试中不触发
+    return window, nav_calls, started
+
+
+def test_preview_waits_for_dwell_then_jumps(qapp, monkeypatch):
+    """方案2：预览先缓冲、驻留到期后才跳页渲染；此前留在原页展示进度。"""
+    window, nav_calls, started = _nav_window(qapp, monkeypatch)
+    item = make_item("big", 10)
+
+    window.on_item_clicked(item)
+
+    assert started == [("C:/root/big", True)]  # silent 启动
+    assert nav_calls == []  # 未跳页，留在原页面
+    assert window._pending_nav_path == "C:/root/big"
+    assert window._nav_jumped is False
+
+    # 预览到达 → 仍不跳（驻留未到期），只缓冲
+    preview = AnalysisResult(
+        root_path="C:/root/big",
+        result_type="directory",
+        total_size=10,
+        items=[make_item("x", 5), make_item("y", 5)],
+        status=ScanStatus.COMPLETED,
+        is_preview=True,
+    )
+    window.on_analysis_finished(preview)
+
+    assert nav_calls == []
+    assert window._nav_preview is preview
+
+    # 驻留到期 → 用缓冲的预览跳页 + 渲染（图表加载占位、列表更新）
+    window._on_dwell()
+
+    assert nav_calls == ["C:/root/big"]
+    assert window._pending_nav_path is None
+    assert window._nav_jumped is True
+
+
+def test_formal_before_dwell_jumps_full(qapp, monkeypatch):
+    """方案2：正式结果在驻留窗口内到达 → 直跳完整结果，无预览闪烁。"""
+    window, nav_calls, started = _nav_window(qapp, monkeypatch)
+    item = make_item("small", 3)
+
+    window.on_item_clicked(item)
+    assert started == [("C:/root/small", True)]
+    assert nav_calls == []
+
+    # 正式结果（非预览）直接到达 → 跳页 + 收进度条
+    formal = make_result([make_item("only", 3)], 3, ScanStatus.COMPLETED)
+    formal.root_path = "C:/root/small"
+    window.on_analysis_finished(formal)
+
+    assert nav_calls == ["C:/root/small"]
+    assert window._pending_nav_path is None
+    assert window.is_analyzing is False
 
 
 # ----------------------------------------------------------------------
@@ -248,7 +326,7 @@ def test_retire_discards_already_finished_worker(qapp):
     from src.services.analysis_service import AnalysisService
 
     service = AnalysisService()
-    worker = ScanWorker(lambda cancel_token, report_progress: None)
+    worker = ScanWorker(lambda cancel_token, report_progress, report_preview: None)
     worker.start()
     assert worker.wait(2000) is True  # 真实线程已结束
 

@@ -22,6 +22,9 @@ class MainWindow(QMainWindow):
     _PROGRESS_INTERVAL_MS = 200
     #: 状态栏最多列出的「受影响目录」条数，超出用省略号收尾。
     _MAX_AFFECTED_IN_STATUS = 3
+    #: 跳转驻留窗口（ms）：点击目录后先留在原页等扫描，窗口内完成则直跳完整结果，
+    #: 超时则用已备好的预览跳转（方案2：限时驻留 + 双轨跳转）。
+    _DWELL_MS = 200
 
     def __init__(self):
         super().__init__()
@@ -30,6 +33,12 @@ class MainWindow(QMainWindow):
         self.is_analyzing = False
         self.is_dark_mode = False  # 新增：主题状态
         self._closing = False  # 关闭流程标志（§12 P1-2）
+        self._pending_nav_path = None  # 待跳转的目标路径（非 None 表示跳转时需 push 历史）
+
+        # 导航事务状态（方案2：限时驻留 + 双轨跳转）
+        self._nav_preview = None      # 已缓冲的预览结果（正式结果未到前暂存）
+        self._nav_jumped = False      # 是否已经跳转到目标并渲染过
+        self._dwell_expired = False   # 驻留窗口是否已到期
 
         # 进度批更新（§12 P1-4）：只保留最新进度，按固定间隔刷新一次 UI
         self._pending_progress = None
@@ -37,6 +46,12 @@ class MainWindow(QMainWindow):
         self._progress_timer.setSingleShot(True)
         self._progress_timer.setInterval(self._PROGRESS_INTERVAL_MS)
         self._progress_timer.timeout.connect(self._flush_progress)
+
+        # 跳转驻留计时器：到期后若全量结果仍未到，则用预览跳转
+        self._dwell_timer = QTimer(self)
+        self._dwell_timer.setSingleShot(True)
+        self._dwell_timer.setInterval(self._DWELL_MS)
+        self._dwell_timer.timeout.connect(self._on_dwell)
 
         self.setWindowFlags(Qt.FramelessWindowHint)
 
@@ -361,6 +376,7 @@ class MainWindow(QMainWindow):
         self.navigation_bar.home_clicked.connect(self.go_home)
         self.navigation_bar.stop_clicked.connect(self.stop_analysis)
         self.navigation_bar.theme_toggled.connect(self.on_theme_toggled)  # 新增主题切换
+        self.navigation_bar.refresh_clicked.connect(self.on_refresh_requested)  # P1-1 刷新
 
         # 列表点击信号
         self.list_widget.item_clicked.connect(self.on_item_clicked)
@@ -392,7 +408,81 @@ class MainWindow(QMainWindow):
         self.statusBar().showMessage("正在分析...")
 
     def on_analysis_finished(self, result):
-        """分析完成"""
+        """分析完成回调：方案2 限时驻留 + 双轨跳转。
+
+        * 预览：先缓冲；仅当驻留窗口已到期（全量未在窗口内完成）才跳转渲染，
+          否则静默丢弃（等正式结果，避免小目录「预览→正式」闪烁）。
+        * 正式：立即跳转（若尚未跳）并渲染完整结果，取消驻留计时器。
+        """
+        is_preview = bool(getattr(result, "is_preview", False))
+        if is_preview:
+            if self._nav_jumped:
+                return  # 正式结果已渲染，晚到的预览不再回退
+            self._nav_preview = result
+            if self._dwell_expired:
+                self._render_preview(result)
+            return
+
+        # 正式结果
+        self._dwell_timer.stop()
+        self._nav_preview = None
+        self._render_formal(result)
+
+    def _begin_navigation(self, path, push: bool, refresh: bool = False):
+        """启动一次目录导航事务：留在原页显示进度，驻留窗口内等结果。
+
+        ``push=True`` 时跳转会写导航历史（列表/饼图点击进入）；``push=False``
+        用于返回上级 / 刷新当前目录（历史已就位或原地刷新，不再 push）。
+        ``refresh=True`` 时先使目标子树缓存失效，强制重新扫描。
+        """
+        self.is_analyzing = True
+        self._pending_nav_path = path if push else None
+        self._nav_preview = None
+        self._nav_jumped = False
+        self._dwell_expired = False
+
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.navigation_bar.set_stop_button_visible(True)
+        self.statusBar().showMessage("正在分析...")
+
+        self._dwell_timer.start(self._DWELL_MS)
+        if refresh:
+            self.analysis_service.refresh_directory(path, silent=True)
+        else:
+            self.analysis_service.analyze_directory(path, silent=True)
+
+    def _on_dwell(self):
+        """驻留窗口到期：全量结果未到 → 用已缓冲的预览跳转（预览未就绪则等它到达）。"""
+        self._dwell_expired = True
+        if self._nav_preview is not None and not self._nav_jumped:
+            self._render_preview(self._nav_preview)
+
+    def _render_preview(self, result):
+        """跳转并渲染预览首帧：文件精确、目录「计算中…」；图表显示加载占位。"""
+        self._nav_jumped = True
+        if self._pending_nav_path is not None:
+            self.navigation_service.navigate_to(self._pending_nav_path)
+            self._pending_nav_path = None
+        self._progress_timer.stop()
+        self._pending_progress = None
+        self.progress_bar.setRange(0, 100)
+        self.progress_bar.setValue(0)
+        self.progress_bar.setVisible(True)
+        self.navigation_bar.set_stop_button_visible(True)
+
+        self.chart_widget.show_loading("目录大小计算中...")
+        self.list_widget.update_list(result)
+        self._sync_nav_ui()
+        self.statusBar().showMessage("目录大小计算中...")
+
+    def _render_formal(self, result):
+        """跳转并渲染正式结果（完整饼图 + 列表），收尾导航事务。"""
+        self._nav_jumped = True
+        if self._pending_nav_path is not None:
+            self.navigation_service.navigate_to(self._pending_nav_path)
+            self._pending_nav_path = None
         self.is_analyzing = False
         self._progress_timer.stop()
         self._pending_progress = None
@@ -409,18 +499,18 @@ class MainWindow(QMainWindow):
         else:
             status_text = "分析完成"
 
-        try:
-            self.chart_widget.update_chart(result)
-            self.list_widget.update_list(result)
-            self.navigation_bar.update_path_display(
-                self.navigation_service.get_current_path_display()
-            )
+        self.chart_widget.update_chart(result)
+        self.list_widget.update_list(result)
+        self._sync_nav_ui()
+        self.statusBar().showMessage(status_text)
 
-            is_at_root = self.navigation_service.current_path is None
-            self.navigation_bar.set_navigation_buttons(not is_at_root)
-            self.statusBar().showMessage(status_text)
-        except Exception as e:
-            self.statusBar().showMessage(f"更新UI时出错: {str(e)}")
+    def _sync_nav_ui(self):
+        """同步导航相关的非内容 UI（路径显示 / 导航按钮可用性）。"""
+        self.navigation_bar.update_path_display(
+            self.navigation_service.get_current_path_display()
+        )
+        is_at_root = self.navigation_service.current_path is None
+        self.navigation_bar.set_navigation_buttons(not is_at_root)
 
     def _partial_status_text(self, result):
         """构造 PARTIAL 状态文案：说明原因，能定位时列出受影响目录。"""
@@ -441,37 +531,50 @@ class MainWindow(QMainWindow):
             self._progress_timer.start()
 
     def _flush_progress(self):
-        """把暂存的进度一次性应用到 UI（percent < 0 表示总量未知，显示 busy 态）。"""
+        """把暂存的进度一次性应用到 UI（percent < 0 表示总量未知）。"""
         if self._pending_progress is None:
             return
         progress, current_item = self._pending_progress
         self._pending_progress = None
-        if progress < 0:
-            self.progress_bar.setRange(0, 0)
-        else:
+        if progress >= 0:
             self.progress_bar.setRange(0, 100)
             self.progress_bar.setValue(progress)
+        # 总量未知（-1）保持当前确定性进度条位置，不切换滚动 busy 态。
         self.statusBar().showMessage(current_item)
 
     def on_error_occurred(self, error_message):
         """错误处理"""
         self.is_analyzing = False
         self._progress_timer.stop()
+        self._dwell_timer.stop()
         self._pending_progress = None
+        self._nav_preview = None
         self.progress_bar.setRange(0, 100)
         self.progress_bar.setVisible(False)
+        self.navigation_bar.set_stop_button_visible(False)
         QMessageBox.warning(self, "错误", error_message)
         self.statusBar().showMessage("分析出错")
 
     def on_item_clicked(self, disk_item):
-        """处理项目点击"""
+        """处理项目点击：限时驻留——原页展示进度，窗口内完成则直跳完整、超时先跳预览。"""
         try:
             if disk_item and hasattr(disk_item, 'path') and hasattr(disk_item, 'item_type'):
                 if not self.is_analyzing:  # 确保没有正在进行的分析
-                    self.navigation_service.navigate_to(disk_item.path)
-                    self.analysis_service.analyze_directory(disk_item.path)
+                    self._begin_navigation(disk_item.path, push=True)
         except Exception as e:
             QMessageBox.warning(self, "错误", f"无法分析目录: {str(e)}")
+
+    def on_refresh_requested(self):
+        """刷新当前目录：使其子树缓存失效后原地重新扫描（P1-1 刷新语义）。"""
+        try:
+            if self.is_analyzing:
+                return
+            current = self.navigation_service.current_path
+            if current is None:
+                return  # 磁盘总览无「刷新当前目录」语义
+            self._begin_navigation(current, push=False, refresh=True)
+        except Exception as e:
+            QMessageBox.warning(self, "错误", f"刷新失败: {str(e)}")
 
     def go_back(self):
         """返回上一级"""
@@ -481,7 +584,7 @@ class MainWindow(QMainWindow):
                 if previous_path is None:
                     self.analysis_service.analyze_disks()
                 else:
-                    self.analysis_service.analyze_directory(previous_path)
+                    self._begin_navigation(previous_path, push=False)
         except Exception as e:
             QMessageBox.warning(self, "错误", f"导航失败: {str(e)}")
 
@@ -504,6 +607,7 @@ class MainWindow(QMainWindow):
         """
         self._closing = True
         self._progress_timer.stop()
+        self._dwell_timer.stop()
         self._pending_progress = None
         self.analysis_service.shutdown()
         event.accept()

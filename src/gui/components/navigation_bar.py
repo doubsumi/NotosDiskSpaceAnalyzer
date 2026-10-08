@@ -102,6 +102,7 @@ class NavigationBar(QWidget):
     home_clicked = pyqtSignal()
     stop_clicked = pyqtSignal()
     theme_toggled = pyqtSignal(bool)
+    refresh_clicked = pyqtSignal()
 
     def __init__(self, parent=None):
         super().__init__(parent)
@@ -126,6 +127,7 @@ class NavigationBar(QWidget):
         self.back_button = QPushButton("返回上级")
         self.home_button = QPushButton("返回首页")
         self.stop_button = QPushButton("停止分析")
+        self.refresh_button = QPushButton("刷新")
 
         # 设置按钮样式
         button_style = """
@@ -171,17 +173,20 @@ class NavigationBar(QWidget):
         self.back_button.setStyleSheet(button_style)
         self.home_button.setStyleSheet(button_style)
         self.stop_button.setStyleSheet(stop_button_style)
+        self.refresh_button.setStyleSheet(button_style)
 
         # 初始状态
         self.back_button.setEnabled(False)
         self.home_button.setEnabled(False)
         self.stop_button.setEnabled(False)
         self.stop_button.setVisible(False)
+        self.refresh_button.setEnabled(False)
 
         # 连接信号
         self.back_button.clicked.connect(self.back_clicked)
         self.home_button.clicked.connect(self.home_clicked)
         self.stop_button.clicked.connect(self.stop_clicked)
+        self.refresh_button.clicked.connect(self.refresh_clicked)
         self.theme_switch.theme_toggled.connect(self.on_theme_toggled)
 
         # 布局
@@ -189,6 +194,7 @@ class NavigationBar(QWidget):
         layout.addStretch()
         layout.addWidget(self.theme_switch)  # 使用优化后的开关
         layout.addWidget(self.stop_button)
+        layout.addWidget(self.refresh_button)
         layout.addWidget(self.back_button)
         layout.addWidget(self.home_button)
 
@@ -205,6 +211,7 @@ class NavigationBar(QWidget):
         """设置导航按钮状态"""
         self.back_button.setEnabled(can_go_back)
         self.home_button.setEnabled(can_go_back)
+        self.refresh_button.setEnabled(can_go_back)
 
     def set_stop_button_visible(self, visible):
         """设置停止按钮可见性"""

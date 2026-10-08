@@ -102,6 +102,18 @@ class FileSystem:
             return os.lstat(entry)
         return entry.stat(follow_symlinks=follow_symlinks)
 
+    def stat_entry(
+        self, entry: "os.DirEntry[str]", follow_symlinks: bool = False
+    ) -> os.stat_result:
+        """DirEntry 专用元数据快速路径（O4d：无 PathLike isinstance 分派）。
+
+        与 :meth:`stat` 对 DirEntry 的行为完全一致；Scanner 热路径使用本方法，
+        避免每条目一次的 ``isinstance`` 开销（热路径例外，见
+        ``docs/performance-optimization-plan.md`` §5 O4d）。测试替身重写本方法
+        即可拦截扫描期的元数据获取。
+        """
+        return entry.stat(follow_symlinks=follow_symlinks)
+
     def is_symlink(self, entry: PathLike) -> bool:
         if isinstance(entry, str):
             return os.path.islink(entry)
