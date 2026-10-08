@@ -29,6 +29,7 @@ class ChartWidget(QWidget):
         self.other_item = False
         self._setup_matplotlib()
         self.init_ui()
+        self._preheat_fonts()
 
     def _setup_matplotlib(self):
         """设置matplotlib配置"""
@@ -65,6 +66,23 @@ class ChartWidget(QWidget):
         self.hint_label.setStyleSheet("color: #666; font-size: 12px; margin: 5px;")
         self.hint_label.setWordWrap(True)
         layout.addWidget(self.hint_label)
+
+    def _preheat_fonts(self):
+        """首帧字体缓存预热（O7）：构造时离屏绘制一次空图。
+
+        matplotlib 首次渲染文本需要做字体度量并建缓存（实测 40~80ms），
+        把这笔一次性开销移到应用启动时，消除用户首次进入目录的 UI 尖峰。
+        """
+        try:
+            from matplotlib.backends.backend_agg import FigureCanvasAgg
+
+            figure = Figure(figsize=(1, 1), dpi=100)
+            FigureCanvasAgg(figure)
+            ax = figure.add_subplot(111)
+            ax.pie([1, 1], labels=["预热", "预热"], autopct="%1.1f%%")
+            figure.canvas.draw()
+        except Exception:
+            pass  # 预热失败不影响功能
 
     def update_chart(self, analysis_result: AnalysisResult):
         """更新图表 - 使用Settings配置"""
@@ -119,6 +137,28 @@ class ChartWidget(QWidget):
         text_color = 'white' if self.is_dark_mode else 'black'
         ax.text(0.5, 0.5, "无数据", ha='center', va='center',
                 transform=ax.transAxes, color=text_color, fontsize=12)
+
+    def show_loading(self, message: str = "计算中..."):
+        """O9 预览态：图表区显示加载占位，不绘制「只有文件」的误导性饼图。
+
+        正式结果到达后由 ``update_chart`` 覆盖。置空 ``current_result``，
+        避免主题切换时用占位态误重绘旧饼图。
+        """
+        self.current_result = None
+        self.wedges = None
+        self.wedge_items = []
+        self.other_item = False
+        self.figure.clear()
+        ax = self.figure.add_subplot(111)
+        self._set_chart_background(ax)
+        text_color = 'white' if self.is_dark_mode else 'black'
+        ax.text(0.5, 0.5, message, ha='center', va='center',
+                transform=ax.transAxes, color=text_color, fontsize=12)
+        ax.axis('off')
+        self.chart_title.setText("目录大小计算中...")
+        self.update_title_style()
+        self.hint_label.setText("")
+        self.canvas.draw()
 
     def _prepare_chart_data(self, analysis_result):
         """准备图表数据，并建立与 wedge 一一对应的 ``wedge_items``（P0-6）。

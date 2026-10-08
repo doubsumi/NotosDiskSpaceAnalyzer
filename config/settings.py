@@ -24,6 +24,18 @@ class Settings:
     # 分析配置
     MAX_DIRECTORY_ITEMS = 50  # 最大显示目录项数，小于2%已实际影响显示，所以最大50个
 
+    # 列表流式渲染（O7）：不做截断，首屏 + 滚动增量热更新，任何一项都不丢弃。
+    LIST_INITIAL_ITEMS = 200  # 首屏渲染条数
+    LIST_PAGE_ITEMS = 200  # 滚动到尾部阈值时每批追加条数
+
+    # 目录缓存（O8）：会话级目录表上限（约等于已扫描目录总数），
+    # 超过时按「最早登记的扫描根」整体逐出；不做 TTL。
+    CACHE_MAX_DIRS = 2_000_000
+
+    # 结构性保证：图表只展示 Top-N（MAX_DIRECTORY_ITEMS），列表按大小降序，
+    # 因此图表中出现的目录必然落在列表首屏之内（performance-optimization-plan.md O7）。
+    assert LIST_INITIAL_ITEMS >= MAX_DIRECTORY_ITEMS
+
     @classmethod
     def get_platform_specific_settings(cls):
         """获取平台特定设置"""

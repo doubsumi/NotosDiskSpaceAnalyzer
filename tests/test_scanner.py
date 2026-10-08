@@ -22,7 +22,7 @@ from src.core.scanner import CancellationToken, DirectoryScanner
 
 
 def scan_tree(root, *, filesystem=None, cancel_token=None, include_hidden=True,
-              follow_symlinks=False):
+              follow_symlinks=False, enable_parallel_enum=False):
     """执行一次完整扫描，返回 ``(entries, scanner)``。"""
     scanner = DirectoryScanner(filesystem=filesystem)
     context = ScanContext(
@@ -30,6 +30,7 @@ def scan_tree(root, *, filesystem=None, cancel_token=None, include_hidden=True,
         cancel_token=cancel_token or CancellationToken(),
         include_hidden=include_hidden,
         follow_symlinks=follow_symlinks,
+        enable_parallel_enum=enable_parallel_enum,
     )
     return list(scanner.scan(str(root), context)), scanner
 
@@ -52,17 +53,21 @@ class ForbiddenFileSystem(FileSystem):
 
 
 class DisappearingFileSystem(FileSystem):
-    """对指定文件抛出 FileNotFoundError，模拟扫描期间文件消失。"""
+    """对指定文件抛出 FileNotFoundError，模拟扫描期间文件消失。
+
+    O4d 后扫描热路径经由 ``stat_entry``（DirEntry 快速路径，无 PathLike
+    分派）获取元数据，测试替身重写该方法作为缝合点。
+    """
 
     def __init__(self, vanished: Path):
         super().__init__()
         self.vanished = os.path.normpath(str(vanished))
 
-    def stat(self, entry, follow_symlinks=False):
+    def stat_entry(self, entry, follow_symlinks=False):
         path = entry if isinstance(entry, str) else entry.path
         if os.path.normpath(path) == self.vanished:
             raise FileNotFoundError("gone")
-        return super().stat(entry, follow_symlinks=follow_symlinks)
+        return super().stat_entry(entry, follow_symlinks=follow_symlinks)
 
 
 def test_empty_directory(tmp_path):
@@ -282,7 +287,10 @@ def test_cancel_immediately(tmp_path):
 
 
 def test_cancel_mid_scan(tmp_path):
-    for index in range(5):
+    # O4c：取消检查降频为每 256 条目一次（目录级检查保留）。
+    # 树需超过 256 条目，条目级检查才会触发；token 在第 2 次检查
+    # （根目录 1 次 + 条目级第 1 次）时开始返回取消。
+    for index in range(300):
         (tmp_path / f"f{index}.txt").write_bytes(b"x")
 
     class CancelAfterFirst(CancellationToken):
@@ -304,6 +312,7 @@ def test_cancel_mid_scan(tmp_path):
 
     assert scanner.status is ScanStatus.CANCELLED
     assert scanner.statistics is not None
+    assert len(entries) < 300  # 取消后未扫完
 
 
 def test_build_result_uses_statistics_when_no_aggregator(tmp_path):
@@ -339,3 +348,184 @@ def test_full_scan_is_not_truncated_by_time(tmp_path):
 
     assert len(entries) == 30
     assert scanner.status is ScanStatus.COMPLETED
+
+
+# ----------------------------------------------------------------------
+# O2 —— 目录枚举并发（TS1~TS8；先写测试后实现）
+# ----------------------------------------------------------------------
+
+def make_wide_tree(root: Path) -> Path:
+    """3 层 × 每层 4 目录 × 每目录 3 文件 + 隐藏文件，供并发/串行对比。"""
+    roots = [root]
+    for level in range(3):
+        parents = roots
+        roots = []
+        for index, parent in enumerate(parents):
+            for fanout in range(4):
+                child = parent / f"d{level}_{index}_{fanout}"
+                child.mkdir()
+                roots.append(child)
+            for file_index in range(3):
+                (parent / f"f{level}_{index}_{file_index}.bin").write_bytes(b"x" * 8)
+            (parent / f".hidden_{level}_{index}").write_bytes(b"h")
+    return root
+
+
+def test_parallel_enum_disabled_by_default():
+    """TS8：ScanContext 默认关（可一键退回单线程）。"""
+    context = ScanContext(root_path="root", cancel_token=CancellationToken())
+    assert context.enable_parallel_enum is False
+
+
+def test_parallel_enum_matches_serial_field_by_field(tmp_path):
+    """TS4 / 验收(a)：并发开/关产出逐条目逐字段相等（含 DFS 前序顺序）。"""
+    tree = make_wide_tree(tmp_path)
+
+    serial_entries, serial_scanner = scan_tree(tree)
+    par_entries, par_scanner = scan_tree(tree, enable_parallel_enum=True)
+
+    serial_keys = [
+        (e.path, e.parent_path, e.item_type, e.size, e.is_hidden, e.file_identity)
+        for e in serial_entries
+    ]
+    par_keys = [
+        (e.path, e.parent_path, e.item_type, e.size, e.is_hidden, e.file_identity)
+        for e in par_entries
+    ]
+    assert par_keys == serial_keys  # 顺序 + 内容完全一致（前序契约不变）
+
+    assert par_scanner.status is serial_scanner.status
+    assert par_scanner.statistics.files_scanned == serial_scanner.statistics.files_scanned
+    assert (
+        par_scanner.statistics.directories_scanned
+        == serial_scanner.statistics.directories_scanned
+    )
+    assert par_scanner.statistics.bytes_scanned == serial_scanner.statistics.bytes_scanned
+    assert par_scanner.error_breakdown == serial_scanner.error_breakdown
+    assert par_scanner.error_paths == serial_scanner.error_paths
+    assert par_scanner.skipped_paths == serial_scanner.skipped_paths
+
+
+def test_parallel_enum_records_permission_error_identically(tmp_path):
+    """TS6：预取线程内的 OSError 作为返回值交回主线程，记录与串行路径一致。"""
+    blocked = tmp_path / "blocked"
+    blocked.mkdir()
+    (blocked / "inside.txt").write_bytes(b"x")
+    (tmp_path / "ok.txt").write_bytes(b"ok")
+    fs = ForbiddenFileSystem(blocked)
+
+    serial_entries, serial_scanner = scan_tree(tmp_path, filesystem=fs)
+    par_entries, par_scanner = scan_tree(
+        tmp_path, filesystem=fs, enable_parallel_enum=True
+    )
+
+    assert par_scanner.status is serial_scanner.status is ScanStatus.PARTIAL
+    assert par_scanner.error_breakdown == serial_scanner.error_breakdown
+    assert par_scanner.error_paths == serial_scanner.error_paths
+    assert names(par_entries) == names(serial_entries)
+
+
+def test_parallel_enum_permission_on_root_is_error(tmp_path):
+    """TS6：根目录枚举失败（预取/同步同集合）→ ERROR，不向调用方抛异常。"""
+    entries, scanner = scan_tree(
+        tmp_path, filesystem=ForbiddenFileSystem(tmp_path), enable_parallel_enum=True
+    )
+
+    assert entries == []
+    assert scanner.status is ScanStatus.ERROR
+    assert scanner.statistics.errors == 1
+
+
+def test_parallel_enum_cancel_is_clean(tmp_path):
+    """TS5 / 验收(b)：扫描中途取消 → CANCELLED，池线程在 2s 内全部退出。"""
+    import threading
+    import time
+
+    tree = make_wide_tree(tmp_path)
+    for directory in tree.rglob("*"):
+        if directory.is_dir():
+            for index in range(40):
+                (directory / f"bulk_{index}.txt").write_bytes(b"x" * 4)
+
+    class CancelAfterNTicks(CancellationToken):
+        def __init__(self, limit: int):
+            super().__init__()
+            self._seen = 0
+            self._limit = limit
+
+        def is_cancelled(self):
+            self._seen += 1
+            return super().is_cancelled() or self._seen > self._limit
+
+    scanner = DirectoryScanner()
+    context = ScanContext(
+        root_path=str(tree),
+        cancel_token=CancelAfterNTicks(limit=5),
+        enable_parallel_enum=True,
+    )
+    entries = list(scanner.scan(str(tree), context))  # 触发 generator 收尾（finally）
+
+    assert scanner.status is ScanStatus.CANCELLED
+    assert len(entries) < 200
+
+    deadline = time.monotonic() + 2.0
+    while time.monotonic() < deadline:
+        alive = [t for t in threading.enumerate() if t.name.startswith("notos-enum")]
+        if not alive:
+            break
+        time.sleep(0.02)
+    assert not [t for t in threading.enumerate() if t.name.startswith("notos-enum")]
+
+
+def test_parallel_enum_bounded_in_flight(tmp_path):
+    """TS3：预取在途数有界（≤ 2 × workers），不随树规模无限领先。"""
+    tree = make_wide_tree(tmp_path)
+
+    scanner = DirectoryScanner()
+    context = ScanContext(
+        root_path=str(tree),
+        cancel_token=CancellationToken(),
+        enable_parallel_enum=True,
+    )
+    iterator = scanner.scan(str(tree), context)
+    next(iterator)  # 消费根目录的第一个条目 → 预取已开始
+    try:
+        assert scanner._enum_pool is not None
+        assert len(scanner._pending) <= scanner._max_in_flight
+        assert scanner._max_in_flight == 2 * scanner._enum_pool._max_workers
+    finally:
+        iterator.close()
+    assert scanner._enum_pool is None  # 收尾后池已关闭
+
+
+def test_parallel_enum_results_stable_over_real_tree():
+    """验收(d) 前置：真实目录（System32）并发开跑通且状态稳定（PARTIAL 系错误集固定）。"""
+    root = r"C:\Windows\System32"
+    if not os.path.isdir(root):
+        pytest.skip("仅 Windows 环境执行")
+
+    serial_entries, serial_scanner = scan_tree(root)
+    par_entries, par_scanner = scan_tree(root, enable_parallel_enum=True)
+
+    assert par_scanner.status is serial_scanner.status
+    assert (
+        par_scanner.statistics.files_scanned == serial_scanner.statistics.files_scanned
+    )
+    assert (
+        par_scanner.statistics.directories_scanned
+        == serial_scanner.statistics.directories_scanned
+    )
+    assert par_scanner.statistics.bytes_scanned == serial_scanner.statistics.bytes_scanned
+    assert len(par_entries) == len(serial_entries)
+
+
+def test_scanner_never_imports_qt():
+    """TS7：线程池只在 Core 层，Scanner 模块不得引入任何 Qt 符号。"""
+    import src.core.scanner as scanner_module
+
+    qt_symbols = [
+        name
+        for name in vars(scanner_module)
+        if name.startswith(("PyQt", "Qt", "QObj")) or "QtCore" in name or "QtGui" in name
+    ]
+    assert qt_symbols == []

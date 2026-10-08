@@ -79,12 +79,15 @@ class ScanContext:
 
     * ``include_hidden`` 默认 ``True``（P0-2：不默认跳过隐藏目录）。
     * ``follow_symlinks`` 默认 ``False``（P0-3：防止 cycle / 重复遍历）。
+    * ``enable_parallel_enum`` 默认 ``False``（O2-TS8：可一键退回单线程；
+      开启时 Scanner 内部用线程池**预取目录枚举**，DFS 前序契约不变）。
     """
 
     root_path: str
     cancel_token: CancelToken
     include_hidden: bool = True
     follow_symlinks: bool = False
+    enable_parallel_enum: bool = False
 
 
 class ItemType(Enum):
@@ -95,13 +98,18 @@ class ItemType(Enum):
     SYMLINK = "symlink"
 
 
-@dataclass
+@dataclass(slots=True)
 class ScanEntry:
     """Scanner 产出的单条事实。
 
     ``size`` 为 Logical Size；``allocated_size`` 为预留字段（第一阶段为 None）。
     ``file_identity`` 仅在文件可能存在 hard link（``st_nlink > 1``）时填充，
     其余情况为 ``None``，从而避免为去重集合付出额外内存。
+    ``is_hidden`` 在扫描期从枚举缓存（Windows ``st_file_attributes``）取位，
+    免额外 syscall（O3）；消费者不需要再对路径做 ``lstat``。
+
+    ``slots=True``（性能）：扫描热路径每条目构造一个 ``ScanEntry``，去掉
+    每实例 ``__dict__`` 可省一次字典分配 + 降低 GC 压力（与 O6a 同理）。
     """
 
     path: str
@@ -112,6 +120,7 @@ class ScanEntry:
     modified_time: Optional[float]
     file_identity: Optional[FileIdentity]
     allocated_size: Optional[int] = None
+    is_hidden: bool = False
 
 
 @dataclass

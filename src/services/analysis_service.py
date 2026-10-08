@@ -30,6 +30,7 @@ from __future__ import annotations
 import math
 import os
 import time
+from collections import OrderedDict
 from dataclasses import dataclass, field
 from typing import List, Optional
 
@@ -48,9 +49,15 @@ from src.core.scan_models import (
 )
 from src.core.scanner import DirectoryScanner
 from src.gui.scan_worker import ScanWorker
+from src.services.directory_cache import DirectoryCache, cache_key
 
 #: 扫描过程中向 GUI 转发进度的最小条目间隔（真正的节流在 GUI 侧，§22）。
 _PROGRESS_BATCH = 2000
+
+#: O6c：进度分母表（``_known_totals``）的 LRU 上限。大目录一层可达数万子项，
+#: 全量记忆会随导航无界增长；LRU 保证「最近看过的目录」始终有确定性进度分母，
+#: 最久未用的被挤出（下次进入退回 busy 态，无功能损失）。
+_KNOWN_TOTALS_MAX = 50_000
 
 
 @dataclass
@@ -71,6 +78,8 @@ class DisplayItem:
     free_size: int = 0
     #: 文件管理器默认不显示的项目（P0-2：扫描包含隐藏项，但需向用户解释）。
     is_hidden: bool = False
+    #: O9 预览：子树大小尚未算出（size=0，列表显示「计算中…」）。
+    is_calculating: bool = False
 
     @property
     def is_clickable(self) -> bool:
@@ -93,6 +102,8 @@ class DisplayItem:
             return f"📄 {self.name} - {self.formatted_size} ({self.percentage:.1f}%)"
         if self.item_type == "symlink":
             return f"🔗 {self.name} - {self.formatted_size} ({self.percentage:.1f}%)"
+        if self.is_calculating:
+            return f"📁 {self.name} - 计算中…"
         return f"📁 {self.name} - {self.formatted_size} ({self.percentage:.1f}%)"
 
 
@@ -116,6 +127,12 @@ class AnalysisResult:
     skip_reason: Optional[str] = None
     #: 受影响路径（相对扫描根），供状态栏列出「哪些目录受了影响」。
     affected_paths: List[str] = field(default_factory=list)
+    #: O9：预览结果（文件精确、目录 size=0「计算中」）；正式结果随后同 generation 到达。
+    #: 跳转时机由 GUI 侧的驻留计时器决定（方案2：限时驻留 + 双轨跳转），
+    #: 服务侧不再用子项数门槛抑制预览。
+    is_preview: bool = False
+    #: O8：目录结果的聚合器（含整张目录表）；扫描完成后由服务回写缓存。
+    aggregator: Optional[DirectoryAggregator] = None
 
     @property
     def path(self) -> str:
@@ -152,7 +169,10 @@ class AnalysisService(QObject):
         self.last_result: Optional[AnalysisResult] = None
         #: path → 该路径上次已知的 Logical Size（仅存内存，退出即消失），
         #: 用于估算扫描进度分母，恢复 V1 的确定性进度条。
-        self._known_totals: dict = {}
+        # O6c：进度分母表，LRU 有界（见 _KNOWN_TOTALS_MAX），不再随导航无界增长。
+        self._known_totals: OrderedDict = OrderedDict()
+        #: O8 会话级目录缓存：边界内下钻零 DFS（仅主线程访问，无需加锁）。
+        self._cache = DirectoryCache(max_dirs=Settings.CACHE_MAX_DIRS)
 
     # ------------------------------------------------------------------
     # 对外 API
@@ -161,9 +181,23 @@ class AnalysisService(QObject):
         """分析所有磁盘（总览）。"""
         self._begin(None)
 
-    def analyze_directory(self, path: str) -> None:
-        """分析指定目录。"""
-        self._begin(path)
+    def analyze_directory(self, path: str, silent: bool = False) -> None:
+        """分析指定目录。
+
+        ``silent=True`` 时不发 ``analysis_started``——GUI 留在原页面展示进度，
+        跳转时机由 GUI 的驻留计时器决定（方案2：限时驻留 + 双轨跳转）。
+        """
+        self._begin(path, silent=silent)
+
+    def refresh_directory(self, path: str, silent: bool = False) -> None:
+        """刷新指定目录：使其子树缓存失效后重新分析（P1-1 刷新语义）。
+
+        失效后 ``path`` 不再被任何已扫描根覆盖，从而强制走 O9（预览 + 全量
+        重扫），得到一份新鲜快照；其他缓存不受影响。
+        """
+        root = self._fs.normalize(path) or path
+        self._cache.invalidate(root)
+        self.analyze_directory(root, silent=silent)
 
     def stop_analysis(self) -> None:
         """请求停止当前分析：取消 token + 自然退出，不阻塞、不 terminate。"""
@@ -179,16 +213,23 @@ class AnalysisService(QObject):
     # ------------------------------------------------------------------
     # 启动 / 取消
     # ------------------------------------------------------------------
-    def _begin(self, path: Optional[str]) -> None:
+    def _begin(self, path: Optional[str], silent: bool = False) -> None:
         self._cancel_current()
         self._generation += 1
         generation = self._generation
-        self.analysis_started.emit()
+        if not silent:
+            self.analysis_started.emit()
 
         if path is None:
             self._emit_disks(generation)
-        else:
-            self._start_directory_scan(path, generation)
+            return
+        root = self._fs.normalize(path) or path
+        if self._cache.find_covering_root(root) is not None:
+            # O8 硬约束：落在已扫描边界内 → 零 DFS 直接服务（不重扫 / 不补扫）。
+            self._serve_from_cache(root, generation)
+            return
+        # O9：边界外 → 预览 + 全量补算都由 worker 产出（P1-2：不阻塞 UI 线程）。
+        self._start_directory_scan(root, generation)
 
     def _cancel_current(self) -> None:
         worker = self._worker
@@ -238,11 +279,13 @@ class AnalysisService(QObject):
         workers.extend(self._retired)
         self._worker = None
         self._retired.clear()
+
+        # 让在途回调全部失效，关闭过程中不再更新 UI；O8 会话级缓存一并清空。
+        self._generation += 1
+        self._cache.clear()
+
         if not workers:
             return
-
-        # 让在途回调全部失效，关闭过程中不再更新 UI。
-        self._generation += 1
 
         for worker in workers:
             worker.cancel()
@@ -305,12 +348,19 @@ class AnalysisService(QObject):
         # 进度分母取自上次已知的大小；取不到则为 None（GUI 显示 busy 态）。
         expected_total = self._known_total(path)
 
-        def job(cancel_token, report_progress):
+        def job(cancel_token, report_progress, report_preview):
+            # O9 / 方案2：预览先于全量扫描，两者都在 worker 线程产出（P1-2）。
+            preview = self._build_preview(root)
+            if preview is not None and not cancel_token.is_cancelled():
+                report_preview(preview)
             return self._run_directory_scan(root, cancel_token, report_progress, expected_total)
 
         worker = ScanWorker(job)
         worker.progress_updated.connect(
             lambda percent, message: self._on_progress(generation, percent, message)
+        )
+        worker.preview_ready.connect(
+            lambda result: self._on_preview(generation, result)
         )
         worker.analysis_finished.connect(
             lambda result: self._on_finished(generation, result)
@@ -320,6 +370,131 @@ class AnalysisService(QObject):
         )
         self._worker = worker
         worker.start()
+
+    # ------------------------------------------------------------------
+    # O8 缓存命中 / O9 预览（下钻链路，均在 worker 线程装配，零 DFS）
+    # ------------------------------------------------------------------
+    def _serve_from_cache(self, root: str, generation: int) -> None:
+        """O8 命中：一次 scandir 取顶层新鲜度 + 缓存表 O(1) 子树大小。
+
+        装配在 worker 线程完成（P1-2：命中路径不阻塞 UI 线程）。只读访问
+        ``_cache``：主线程在上一轮 ``_on_finished`` 之后不会再写缓存，安全。
+        """
+
+        def job(cancel_token, report_progress, report_preview):
+            try:
+                result = self._build_from_cache(root)
+            except OSError:
+                result = None
+            if result is None:
+                # 根已不可访问（被删除 / 权限变化）：与扫描失败同语义，不做重扫兜底。
+                return AnalysisResult(
+                    root_path=root,
+                    result_type="directory",
+                    total_size=0,
+                    status=ScanStatus.ERROR,
+                )
+            return result
+
+        worker = ScanWorker(job)
+        worker.analysis_finished.connect(
+            lambda result: self._on_finished(generation, result)
+        )
+        worker.error_occurred.connect(
+            lambda message: self._on_error(generation, message)
+        )
+        self._worker = worker
+        worker.start()
+
+    def _build_from_cache(self, root: str) -> Optional[AnalysisResult]:
+        """从缓存目录表组装结果：文件大小取自本次 scandir，目录大小 O(1) 查表。
+
+        P2-3：仅当当前目录**就是**被扫描的根时，才沿用该根的状态 / 跳过原因 /
+        受影响路径；子目录命中缓存时其自身扫描状态未被记录，按「快照视图」以
+        ``COMPLETED`` 呈现，不再把覆盖根的整体 PARTIAL 状态误导到子目录上。
+        """
+        record = self._cache.find_covering_root(root)
+        root_stats = self._cache.stats_for(root)
+        if record is None or root_stats is None:
+            return None
+        items: List[DisplayItem] = []
+        with self._fs.scandir(root) as iterator:
+            for entry in iterator:
+                items.append(self._display_item_from_entry(entry, preview=False))
+        total = root_stats.size
+        for item in items:
+            item.percentage = (item.size / total * 100) if total else 0.0
+        items.sort(key=lambda item: item.size, reverse=True)
+        is_scan_root = record.key == cache_key(root)
+        return AnalysisResult(
+            root_path=root,
+            result_type="directory",
+            total_size=total,
+            items=items,
+            status=record.status if is_scan_root else ScanStatus.COMPLETED,
+            skip_reason=record.skip_reason if is_scan_root else None,
+            affected_paths=list(record.affected_paths) if is_scan_root else [],
+        )
+
+    def _build_preview(self, root: str) -> Optional[AnalysisResult]:
+        """O9 预览：一次 scandir 产出首帧——文件精确、目录显示「计算中…」。
+
+        在 worker 线程执行（P1-2）；失败返回 ``None``，正式扫描随后会给出
+        ERROR 结果。不做子项数门槛抑制——跳转时机交给 GUI 的驻留计时器。
+        """
+        try:
+            items: List[DisplayItem] = []
+            with self._fs.scandir(root) as iterator:
+                for entry in iterator:
+                    items.append(self._display_item_from_entry(entry, preview=True))
+        except OSError:
+            return None
+        # 与正式结果同口径：total 只含文件（符号链接不计入）。
+        total = sum(item.size for item in items if item.item_type == "file")
+        for item in items:
+            item.percentage = (item.size / total * 100) if total else 0.0
+        items.sort(key=lambda item: item.size, reverse=True)
+        return AnalysisResult(
+            root_path=root,
+            result_type="directory",
+            total_size=total,
+            items=items,
+            status=ScanStatus.COMPLETED,
+            is_preview=True,
+        )
+
+    def _display_item_from_entry(self, entry, *, preview: bool) -> DisplayItem:
+        """把一次 ``scandir`` 的 DirEntry 转为展示条目（O8 服务 / O9 预览共用）。
+
+        文件 / 符号链接大小取自枚举缓存 stat（O3 同款，零 lstat）；目录大小
+        O8 从缓存表 O(1) 查得，O9 预览置 0 并标记 ``is_calculating``。
+        """
+        item_type = self._fs.classify(entry)
+        size = 0
+        is_calculating = False
+        if item_type is ItemType.DIRECTORY:
+            if not preview:
+                stats = self._cache.stats_for(entry.path)
+                size = stats.size if stats is not None else 0
+            else:
+                is_calculating = True  # size 保持 0，列表显示「计算中…」
+        else:
+            try:
+                size = self._fs.stat_entry(entry, follow_symlinks=False).st_size
+            except OSError:
+                size = 0  # 条目在枚举后消失：按 0 处理，正式扫描会记录该错误
+        return DisplayItem(
+            name=entry.name,
+            path=entry.path,
+            size=size,
+            item_type=(
+                "directory" if item_type is ItemType.DIRECTORY
+                else "symlink" if item_type is ItemType.SYMLINK
+                else "file"
+            ),
+            is_hidden=self._fs.is_hidden(entry),
+            is_calculating=is_calculating,
+        )
 
     def _run_directory_scan(
         self, root: str, cancel_token, report_progress, expected_total: Optional[int] = None
@@ -343,17 +518,56 @@ class AnalysisService(QObject):
         seen = 0
         scanned_bytes = 0
         root_children: List[ScanEntry] = []
-        for entry in scanner.scan(root, context):
-            directory.consume(entry)
-            scanned_bytes += entry.size
-            if entry.parent_path == root:
-                root_children.append(entry)
-            seen += 1
-            if seen % _PROGRESS_BATCH == 0:
-                report_progress(
-                    self._progress_percent(scanned_bytes, denominator),
-                    f"正在扫描: {entry.name}",
-                )
+
+        # 快速路径（B2）：直接消费 scanner 的共享遍历核心，把「事实」累加进
+        # 聚合器，不经 ScanEntry / 逐条 yield——消除每条目的对象构造与生成器
+        # 停机/恢复，盘级加载显著逼近 V1.1.1；仅对根的直接子项构造 ScanEntry
+        # （供 _assemble_directory_result 展示，数量级小）。
+        walk = scanner._walk(root, context)
+        try:
+            for parent, batch in walk:
+                is_root = parent == root
+                for entry, item_type, stat_result, hidden, identity in batch:
+                    if item_type is ItemType.FILE:
+                        directory.add_file(parent, stat_result.st_size, identity)
+                        scanned_bytes += stat_result.st_size
+                        if is_root:
+                            root_children.append(
+                                ScanEntry(
+                                    path=entry.path, name=entry.name, parent_path=parent,
+                                    item_type=ItemType.FILE, size=stat_result.st_size,
+                                    modified_time=stat_result.st_mtime,
+                                    file_identity=identity, is_hidden=hidden,
+                                )
+                            )
+                    elif item_type is ItemType.DIRECTORY:
+                        directory.add_directory(entry.path, parent)
+                        if is_root:
+                            root_children.append(
+                                ScanEntry(
+                                    path=entry.path, name=entry.name, parent_path=parent,
+                                    item_type=ItemType.DIRECTORY, size=0,
+                                    modified_time=None, file_identity=None, is_hidden=hidden,
+                                )
+                            )
+                    else:  # SYMLINK（fast 路径只有 follow_symlinks=False）
+                        if is_root:
+                            size, modified = scanner._link_metadata(entry)
+                            root_children.append(
+                                ScanEntry(
+                                    path=entry.path, name=entry.name, parent_path=parent,
+                                    item_type=ItemType.SYMLINK, size=size,
+                                    modified_time=modified, file_identity=None, is_hidden=hidden,
+                                )
+                            )
+                    seen += 1
+                    if seen % _PROGRESS_BATCH == 0:
+                        report_progress(
+                            self._progress_percent(scanned_bytes, denominator),
+                            f"正在扫描: {entry.name}",
+                        )
+        finally:
+            walk.close()
 
         scan = scanner.build_result(
             root_path=root,
@@ -394,7 +608,8 @@ class AnalysisService(QObject):
                     path=entry.path,
                     size=size,
                     item_type=item_type,
-                    is_hidden=self._fs.is_hidden(entry.path),
+                    # O3：隐藏位来自扫描期的枚举缓存，装配阶段零 syscall。
+                    is_hidden=entry.is_hidden,
                 )
             )
 
@@ -412,6 +627,7 @@ class AnalysisService(QObject):
             scan=scan,
             skip_reason=skip_reason,
             affected_paths=affected_paths or [],
+            aggregator=directory,  # O8：供 _on_finished 回写缓存（整张目录表）
         )
 
     @staticmethod
@@ -453,17 +669,31 @@ class AnalysisService(QObject):
     # 进度分母（仅内存，退出即消失）
     # ------------------------------------------------------------------
     def _known_total(self, path: str) -> Optional[int]:
-        """取该路径上次已知的大小作为进度分母；取不到返回 None。"""
-        return self._known_totals.get(self._fs.normalize(path))
+        """取该路径上次已知的大小作为进度分母；取不到返回 None。
+
+        命中时 ``move_to_end`` 维护 LRU 新鲜度。
+        """
+        key = self._fs.normalize(path)
+        size = self._known_totals.get(key)
+        if size is not None:
+            self._known_totals.move_to_end(key)
+        return size
 
     def _remember_totals(self, result: AnalysisResult) -> None:
         """记住本次结果各项的大小，供下次进入该项时估算进度分母。
 
         进磁盘时记磁盘已用空间（``used_size``），进目录时记其 Logical Size。
+        超过 ``_KNOWN_TOTALS_MAX`` 时按 LRU 从最旧端挤出（O6c）。
         """
+        totals = self._known_totals
         for item in result.items:
             size = item.used_size if item.item_type == "disk" else item.size
-            self._known_totals[self._fs.normalize(item.path)] = size
+            key = self._fs.normalize(item.path)
+            if key in totals:
+                totals.move_to_end(key)
+            totals[key] = size
+        while len(totals) > _KNOWN_TOTALS_MAX:
+            totals.popitem(last=False)
 
     @staticmethod
     def _progress_percent(scanned_bytes: int, denominator: Optional[int]) -> int:
@@ -484,6 +714,16 @@ class AnalysisService(QObject):
             return
         self.progress_updated.emit(percent, message)
 
+    def _on_preview(self, generation: int, result: AnalysisResult) -> None:
+        """O9 预览首帧：直接转发给 GUI（由 GUI 的驻留计时器决定是否跳页）。
+
+        不写缓存、不写 ``_remember_totals``（目录 size=0 会污染进度分母）、
+        不 retire worker（全量扫描仍在进行）。
+        """
+        if generation != self._generation:
+            return
+        self.analysis_finished.emit(result)
+
     def _on_finished(self, generation: int, result: AnalysisResult) -> None:
         if generation != self._generation:
             return
@@ -491,6 +731,22 @@ class AnalysisService(QObject):
         if isinstance(result, AnalysisResult) and result.status is ScanStatus.ERROR:
             self.error_occurred.emit(f"无法完成分析: {result.root_path or '磁盘'}")
             return
+        if (
+            result.result_type == "directory"
+            and result.aggregator is not None
+            and result.status in (ScanStatus.COMPLETED, ScanStatus.PARTIAL)
+        ):
+            # O8 回写：整张目录表合并进缓存并登记该根 → 其子孙下钻全部零 DFS。
+            # CANCELLED / ERROR 的表不完整，不登记。
+            self._cache.register(
+                result.root_path,
+                result.aggregator,
+                result.status,
+                skip_reason=result.skip_reason,
+                affected_paths=result.affected_paths,
+            )
+            # O6b：目录表已由缓存持有（_dirs 原样保留），释放扫描期中间数据。
+            result.aggregator.release_scratch()
         self.last_result = result
         self._remember_totals(result)
         self.analysis_finished.emit(result)
