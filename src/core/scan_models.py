@@ -167,3 +167,7 @@ class ScanResult:
     statistics: ScanStatistics
     status: ScanStatus
     error_count: int
+    #: Backend provenance and ordering guarantee are part of the result
+    #: contract, so cache/application layers never infer them from a class.
+    backend_id: str = ""
+    output_order: str = "dfs_preorder"

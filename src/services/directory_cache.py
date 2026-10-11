@@ -47,6 +47,8 @@ class RootRecord:
     status: ScanStatus
     skip_reason: Optional[str] = None
     affected_paths: List[str] = field(default_factory=list)
+    backend_id: str = ""
+    output_order: str = "dfs_preorder"
 
 
 class DirectoryCache:
@@ -75,6 +77,12 @@ class DirectoryCache:
     def root_count(self) -> int:
         return len(self._roots)
 
+    @staticmethod
+    def can_commit(status: ScanStatus) -> bool:
+        """Only traversals with a known complete coverage may enter the cache."""
+
+        return status in (ScanStatus.COMPLETED, ScanStatus.PARTIAL)
+
     # ------------------------------------------------------------------
     # 写入 / 失效
     # ------------------------------------------------------------------
@@ -85,8 +93,12 @@ class DirectoryCache:
         status: ScanStatus,
         skip_reason: Optional[str] = None,
         affected_paths: Optional[List[str]] = None,
+        backend_id: str = "",
+        output_order: str = "dfs_preorder",
     ) -> None:
         """合并一次已完成扫描的整张目录表，并登记该根（只增不减）。"""
+        if not self.can_commit(status):
+            return
         root_key = cache_key(root_path)
         prefix = root_key + os.sep
         # 重扫根 R：删除登记在 R 之下的旧根（以新快照为准）
@@ -102,6 +114,8 @@ class DirectoryCache:
             status=status,
             skip_reason=skip_reason,
             affected_paths=list(affected_paths or []),
+            backend_id=backend_id,
+            output_order=output_order,
         )
         self._evict_if_needed()
 

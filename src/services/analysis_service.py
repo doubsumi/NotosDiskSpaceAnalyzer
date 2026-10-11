@@ -37,11 +37,14 @@ from typing import List, Optional
 from PyQt5.QtCore import QObject, pyqtSignal
 
 from config.settings import Settings
+from src.backends.registry import BackendRegistry
+from src.backends.scandir.backend import ScandirBackend
+from src.backends.selection import SelectionPolicy
 from src.core.aggregators import DirectoryAggregator
 from src.core.filesystem import FileSystem
+from src.core.scan_contracts import OutputOrder, ScanRequest, ScanOptions
 from src.core.scan_models import (
     ItemType,
-    ScanContext,
     ScanEntry,
     ScanResult,
     ScanStatistics,
@@ -50,6 +53,7 @@ from src.core.scan_models import (
 from src.core.scanner import DirectoryScanner
 from src.gui.scan_worker import ScanWorker
 from src.services.directory_cache import DirectoryCache, cache_key
+from src.services.scan_orchestrator import ScanOrchestrator
 
 #: 扫描过程中向 GUI 转发进度的最小条目间隔（真正的节流在 GUI 侧，§22）。
 _PROGRESS_BATCH = 2000
@@ -161,6 +165,19 @@ class AnalysisService(QObject):
     def __init__(self, filesystem: Optional[FileSystem] = None, parent: Optional[QObject] = None) -> None:
         super().__init__(parent)
         self._fs = filesystem or FileSystem()
+        # Composition root: concrete backends are registered once here; the
+        # rest of the service only deals with the backend contract.
+        self._backend_registry = BackendRegistry()
+        self._backend_registry.register(
+            "scandir",
+            lambda fs: ScandirBackend(
+                fs, scanner_factory=lambda filesystem: DirectoryScanner(filesystem)
+            ),
+        )
+        self._selection_policy = SelectionPolicy()
+        self._scan_orchestrator = ScanOrchestrator(
+            self._backend_registry, self._selection_policy, self._fs
+        )
         self._worker: Optional[ScanWorker] = None
         #: 已取消或已完成但线程尚未退出的 worker，保留引用直到线程真正结束，
         #: 避免 QThread 被提前析构（``QThread: Destroyed while thread is still running``）。
@@ -504,13 +521,25 @@ class AnalysisService(QObject):
         ``expected_total`` 为该项的已知 Logical Size（来自上一次结果），作为进度
         分母以恢复 V1 的确定性进度条；为 None / 非正时退回 ``percent=-1``（busy 态）。
         """
-        scanner = DirectoryScanner(self._fs)
-        context = ScanContext(
+        request = ScanRequest(
             root_path=root,
             cancel_token=cancel_token,
-            include_hidden=True,   # P0-2：默认不跳过隐藏项
-            follow_symlinks=False,  # P0-3：不跟随链接，避免 cycle / 重复遍历
+            options=ScanOptions(
+                include_hidden=True,   # P0-2：默认不跳过隐藏项
+                follow_symlinks=False,  # P0-3：不跟随链接，避免 cycle / 重复遍历
+            ),
         )
+        prepared = self._scan_orchestrator.prepare(request)
+        session = prepared.session
+        if session.output_order is not OutputOrder.DFS_PREORDER:
+            raise RuntimeError(
+                "当前目录聚合器要求 DFS_PREORDER，拒绝无序后端输入"
+            )
+        # The adapter exposes the optimized scanner for the current baseline.
+        # Generic backends will use ScanSession.run() once their pipeline is
+        # introduced; this keeps the hot path free of ScanEntry allocations.
+        scanner = session.scanner
+        context = request.context()
         directory = DirectoryAggregator(root)
 
         denominator = expected_total if expected_total and expected_total > 0 else None
@@ -575,6 +604,8 @@ class AnalysisService(QObject):
             file_count=directory.file_count,
             directory_count=directory.directory_count,
         )
+        scan.backend_id = session.backend_id
+        scan.output_order = session.output_order.value
         skip_reason, affected_paths = self._summarize_incomplete(root, scan, scanner)
         return self._assemble_directory_result(
             root, scan, directory, root_children, skip_reason, affected_paths
@@ -744,6 +775,8 @@ class AnalysisService(QObject):
                 result.status,
                 skip_reason=result.skip_reason,
                 affected_paths=result.affected_paths,
+                backend_id=result.scan.backend_id if result.scan else "",
+                output_order=result.scan.output_order if result.scan else "dfs_preorder",
             )
             # O6b：目录表已由缓存持有（_dirs 原样保留），释放扫描期中间数据。
             result.aggregator.release_scratch()

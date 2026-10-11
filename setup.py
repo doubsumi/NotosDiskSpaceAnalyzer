@@ -2,8 +2,9 @@ from setuptools import setup, find_packages
 
 setup(
     name="NotosDiskAnalyzer",
-    version="1.0.0",
+    version="2.1.1",
     description="A cross-platform disk space analysis tool",
+    python_requires=">=3.10",
     packages=find_packages(),
     install_requires=[
         "PyQt5>=5.15.0",

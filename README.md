@@ -2,7 +2,7 @@
 
 [![Python 3.8+](https://img.shields.io/badge/Python-3.10%2B-blue.svg)](https://python.org)
 [![Platform](https://img.shields.io/badge/Platform-Windows%20%7C%20Linux-green.svg)](https://github.com/doubsumi/NotosDiskSpaceAnalyzer)
-[![Version](https://img.shields.io/badge/Version-1.1.1-orange.svg)](https://github.com/doubsumi/NotosDiskSpaceAnalyzer/releases)
+[![Version](https://img.shields.io/badge/Version-2.1.1-orange.svg)](https://github.com/doubsumi/NotosDiskSpaceAnalyzer/releases)
 [![GitHub Issues](https://img.shields.io/github/issues/doubsumi/NotosDiskSpaceAnalyzer)](https://github.com/doubsumi/NotosDiskSpaceAnalyzer/issues)
 [![GitHub Stars](https://img.shields.io/github/stars/doubsumi/NotosDiskSpaceAnalyzer)](https://github.com/doubsumi/NotosDiskSpaceAnalyzer/stargazers)
 
@@ -31,7 +31,7 @@
 
 ### 环境要求
 
-- Python 3.6 或更高版本
+- Python 3.10 或更高版本
 - 支持的操作系统：Windows、Linux
 
 ### 安装步骤
